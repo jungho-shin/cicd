@@ -1,8 +1,10 @@
+# NOTE: patch 대상 매칭용 파일이므로 metadata.namespace 를 지정하지 않는다.
+# upstream install.yaml 의 리소스에는 namespace 가 없고, kustomization 의
+# `namespace: argocd` 트랜스포머는 patch 적용 이후에 실행되기 때문이다.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: argocd-notifications-cm
-  namespace: argocd
 data:
   # Bitbucket 커밋에 배포 상태(build status) 를 되돌려 기록한다.
   service.webhook.bitbucket: |

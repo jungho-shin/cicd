@@ -1,8 +1,10 @@
+# NOTE: patch 대상 매칭용 파일이므로 metadata.namespace 를 지정하지 않는다.
+# upstream install.yaml 의 리소스에는 namespace 가 없고, kustomization 의
+# `namespace: argocd` 트랜스포머는 patch 적용 이후에 실행되기 때문이다.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: argocd-rbac-cm
-  namespace: argocd
   labels:
     app.kubernetes.io/name: argocd-rbac-cm
     app.kubernetes.io/part-of: argocd
