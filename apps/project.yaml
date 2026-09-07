@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: 개발 환경 애플리케이션
+  sourceRepos:
+    - https://bitbucket.org/my-workspace/*
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: 'dev-*'
+    - server: https://kubernetes.default.svc
+      namespace: sample-app-dev
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota
+    - group: ''
+      kind: LimitRange
+  roles:
+    - name: ci
+      description: Bitbucket Pipelines 동기화 트리거용
+      policies:
+        - p, proj:dev:ci, applications, sync, dev/*, allow
+        - p, proj:dev:ci, applications, get, dev/*, allow
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: 운영 환경 애플리케이션
+  sourceRepos:
+    - https://bitbucket.org/my-workspace/gitops-manifests.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: 'prod-*'
+    - server: https://kubernetes.default.svc
+      namespace: sample-app-prod
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+  syncWindows:
+    # 운영은 평일 업무시간에만 자동 동기화 허용
+    - kind: allow
+      schedule: '0 9 * * 1-5'
+      duration: 9h
+      applications:
+        - '*'
+      manualSync: true
+      timeZone: Asia/Seoul

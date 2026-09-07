@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-image-updater-config
+  namespace: argocd
+data:
+  applications_api: argocd
+  argocd.grpc_web: "true"
+  argocd.server_addr: argocd-server.argocd.svc.cluster.local:80
+  argocd.plaintext: "true"
+  git.user: argocd-image-updater
+  git.email: argocd-image-updater@example.com
+  registries.conf: |
+    registries:
+      - name: private-registry
+        api_url: https://my-registry.example.com
+        prefix: my-registry.example.com
+        credentials: pullsecret:argocd/regcred
+        default: true

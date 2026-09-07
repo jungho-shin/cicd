@@ -1,0 +1,51 @@
+# Bitbucket 워크스페이스의 리포지토리를 스캔해서 Application 을 자동 생성한다.
+# 각 리포지토리 루트에 .argocd.yaml 이 있는 경우에만 대상이 된다.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: bitbucket-workspace-apps
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - scmProvider:
+        bitbucket:
+          owner: my-workspace
+          user: __BITBUCKET_USER__
+          appPasswordRef:
+            secretName: bitbucket-scm-credentials
+            key: password
+        filters:
+          - repositoryMatch: '^svc-.*'
+            pathsExist: [.argocd.yaml, manifests]
+        cloneProtocol: https
+  template:
+    metadata:
+      name: '{{ .repository }}-dev'
+      annotations:
+        repo: '{{ .repository }}'
+    spec:
+      project: dev
+      source:
+        repoURL: '{{ .url }}'
+        targetRevision: '{{ .branch }}'
+        path: manifests/overlays/dev
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{ .repository }}-dev'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bitbucket-scm-credentials
+  namespace: argocd
+type: Opaque
+stringData:
+  password: __REPLACE_ME__   # Bitbucket App Password (Repositories: Read)

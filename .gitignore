@@ -1,0 +1,5 @@
+# 로컬에서 생성한 실제 시크릿
+*.secret.yaml
+*-secret.local.yaml
+secrets/
+.env

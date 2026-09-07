@@ -1,0 +1,27 @@
+# 이 Application 하나만 등록하면 apps/ 디렉터리의 모든 Application 이 따라 들어온다.
+# kubectl apply -f apps/app-of-apps.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bootstrap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://bitbucket.org/my-workspace/gitops-manifests.git
+    targetRevision: main
+    path: apps
+    directory:
+      recurse: true
+      exclude: 'app-of-apps.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

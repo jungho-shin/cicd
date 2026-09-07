@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # 외부 접속 URL (Ingress host 와 일치해야 SSO/링크가 정상 동작)
+  url: https://argocd.example.com
+
+  # Bitbucket Cloud 를 SSO(OIDC) 로 쓰지 않는 경우, 로컬 계정으로 CI 전용 사용자 생성
+  accounts.cicd: apiKey, login
+
+  # Application 이 배포될 수 있는 네임스페이스 (app-in-any-namespace)
+  application.namespaces: argocd, cicd
+
+  # kustomize 빌드 옵션
+  kustomize.buildOptions: --enable-helm
+
+  # 리소스 diff 제외 (HPA 가 관리하는 replicas 등)
+  resource.customizations.ignoreDifferences.apps_Deployment: |
+    jsonPointers:
+      - /spec/replicas
+
+  # ---------------------------------------------------------------
+  # Bitbucket Cloud OIDC SSO (선택). Bitbucket 자체는 OIDC IdP 를 제공하지
+  # 않으므로 보통 Atlassian Access(SAML) 또는 Dex 커넥터를 사용한다.
+  # 아래는 Dex 를 통한 예시 - 사용 시 주석 해제.
+  # ---------------------------------------------------------------
+  # dex.config: |
+  #   connectors:
+  #     - type: bitbucket-cloud
+  #       id: bitbucket
+  #       name: Bitbucket
+  #       config:
+  #         clientID: $dex.bitbucket.clientId
+  #         clientSecret: $dex.bitbucket.clientSecret
+  #         teams:
+  #           - my-workspace

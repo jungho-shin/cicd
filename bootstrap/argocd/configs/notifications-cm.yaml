@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # Bitbucket 커밋에 배포 상태(build status) 를 되돌려 기록한다.
+  service.webhook.bitbucket: |
+    url: https://api.bitbucket.org/2.0
+    headers:
+      - name: Authorization
+        value: Bearer $bitbucket-token
+      - name: Content-Type
+        value: application/json
+
+  template.app-deployed: |
+    webhook:
+      bitbucket:
+        method: POST
+        path: /repositories/my-workspace/{{.app.metadata.annotations.repo}}/commit/{{.app.status.operationState.syncResult.revision}}/statuses/build
+        body: |
+          {
+            "key": "argocd-{{.app.metadata.name}}",
+            "state": "SUCCESSFUL",
+            "name": "Argo CD Sync",
+            "url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
+            "description": "Synced to {{.app.status.sync.revision}}"
+          }
+
+  template.app-sync-failed: |
+    webhook:
+      bitbucket:
+        method: POST
+        path: /repositories/my-workspace/{{.app.metadata.annotations.repo}}/commit/{{.app.status.operationState.syncResult.revision}}/statuses/build
+        body: |
+          {
+            "key": "argocd-{{.app.metadata.name}}",
+            "state": "FAILED",
+            "name": "Argo CD Sync",
+            "url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
+            "description": "Sync failed"
+          }
+
+  trigger.on-deployed: |
+    - when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      send: [app-deployed]
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send: [app-sync-failed]
