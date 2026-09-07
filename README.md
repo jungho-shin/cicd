@@ -30,6 +30,13 @@ bootstrap/
       notifications-cm.yaml   배포 결과를 Bitbucket build status 로 회신
       notifications-secret.yaml
   image-updater/              (선택) Argo CD Image Updater
+  bitbucket/                  (선택) Bitbucket Data Center 자체 호스팅
+    namespace.yaml
+    local-pv.yaml             단일 노드용 hostPath PV
+    postgres.yaml             PostgreSQL 16 + PVC + Secret
+    bitbucket.yaml            Bitbucket StatefulSet + Service + PVC
+    ingress.yaml
+    nodeport.yaml             DNS 없이 노드 IP 로 접속할 때
 
 apps/
   project.yaml                AppProject: dev / prod
@@ -177,3 +184,69 @@ kubectl kustomize bootstrap/argocd            > /dev/null
 kubectl kustomize manifests/sample-app/overlays/dev
 kubectl kustomize manifests/sample-app/overlays/prod
 ```
+
+## 부록: Bitbucket Data Center 자체 호스팅
+
+Bitbucket Cloud 대신 클러스터 안에 Bitbucket 을 직접 올리는 구성. 폐쇄망이거나
+외부에서 클러스터로 webhook 이 들어올 수 없는 환경(NAT 뒤의 로컬 클러스터 등)에서
+유용하다. 이 경우 webhook 이 클러스터 내부 통신으로 처리되어 외부 노출이 필요 없다.
+
+### 사전 조건
+
+- **라이선스 필요.** Bitbucket Data Center 는 유료이며, https://my.atlassian.com 에서
+  30일 평가 라이선스를 발급받을 수 있다. 라이선스 없이는 설치 마법사를 통과하지 못한다.
+- **메모리.** Bitbucket 3Gi + PostgreSQL 1Gi 가 추가로 필요하다. Argo CD 까지 함께
+  올린다면 노드 메모리 **16GB 이상**을 권장한다. 8GB 에서는 기동은 되지만 매우 느리다.
+- **스토리지.** 동적 프로비저너가 없으면 노드에 디렉터리를 미리 만든다:
+
+```bash
+mkdir -p /data/bitbucket /data/postgres
+chown -R 2003:2003 /data/bitbucket
+chown -R 999:999  /data/postgres
+```
+
+### 설치
+
+```bash
+# 시크릿 값 채우기 (라이선스, DB 비밀번호, 관리자 비밀번호)
+vi bootstrap/bitbucket/postgres.yaml     # POSTGRES_PASSWORD
+vi bootstrap/bitbucket/bitbucket.yaml    # SETUP_LICENSE, SETUP_SYSADMIN_PASSWORD
+
+kubectl kustomize bootstrap/bitbucket | kubectl apply -f -
+
+# 최초 기동은 DB 스키마 생성으로 3~5분 걸린다
+kubectl -n bitbucket get pods -w
+kubectl -n bitbucket logs -f sts/bitbucket
+```
+
+접속은 Ingress(`bitbucket.example.com`) 또는 NodePort(`kustomization.yaml` 에서
+`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30990`).
+
+### Argo CD 연동 시 달라지는 부분
+
+자체 호스팅이면 리포지토리 URL 이 클러스터 내부 주소가 된다.
+
+```bash
+kubectl -n argocd create secret generic repo-bitbucket-https   --from-literal=type=git   --from-literal=url=http://bitbucket.bitbucket.svc.cluster.local:7990/scm/PROJ/gitops-manifests.git   --from-literal=username='<bitbucket-user>'   --from-literal=password='<HTTP access token>'
+kubectl -n argocd label secret repo-bitbucket-https argocd.argoproj.io/secret-type=repository
+```
+
+- Bitbucket DC 는 App Password 가 아니라 **HTTP access token** 을 쓴다
+  (`Profile > Manage account > HTTP access tokens`).
+- `apps/` 의 모든 `repoURL` 도 같은 내부 주소로 바꾼다.
+- **Webhook 은 클러스터 내부 주소로 설정한다.** Bitbucket 리포지토리
+  `Settings > Webhooks` 에서 URL 을
+  `http://argocd-server.argocd.svc.cluster.local/api/webhook` 로 지정하면
+  외부 노출 없이 동작한다. Cloud 와 달리 DC 는 webhook secret 을 지원하므로
+  `configs/argocd-secret.yaml` 의 `webhook.bitbucketserver.secret` 값과 일치시킨다.
+
+### Pipelines 대체
+
+Bitbucket Data Center 에는 Bitbucket Pipelines 가 없다(Cloud 전용 기능).
+`ci/bitbucket-pipelines.yml` 대신 다음 중 하나로 CI 를 구성한다.
+
+| 방식 | 설명 |
+|---|---|
+| **Argo CD Image Updater** | `bootstrap/image-updater/` 적용. CI 없이 레지스트리 폴링만으로 배포까지 이어진다. 가장 간단하다. |
+| **Jenkins / GitLab Runner** | 클러스터에 별도 CI 를 올리고 gitops 리포지토리에 커밋. |
+| **Argo Workflows / Tekton** | 쿠버네티스 네이티브 CI. Bitbucket webhook 으로 트리거. |
