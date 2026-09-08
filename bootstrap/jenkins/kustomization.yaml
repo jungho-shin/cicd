@@ -10,5 +10,5 @@ resources:
   - casc.yaml
   - jenkins.yaml
   - ingress.yaml
-  # DNS/Ingress 없이 노드 IP 로 접속하려면 주석 해제 (http://<노드IP>:30808)
-  # - nodeport.yaml
+  # DNS/Ingress 없이 노드 IP 로 접속 (http://<노드IP>:30808)
+  - nodeport.yaml
