@@ -67,6 +67,26 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
       initContainers:
+        # hostPath PV 는 kubelet 이 fsGroup 을 적용해 주지 않는다.
+        # (type: DirectoryOrCreate 로 만들어진 디렉터리는 root:root 0755)
+        # 그래서 root 로 한 번 소유권을 맞춰 준다. 동적 프로비저너를 쓰면 불필요.
+        - name: fix-permissions
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /var/jenkins_home/plugins
+              chown -R 1000:1000 /var/jenkins_home
+              chmod 755 /var/jenkins_home
+          volumeMounts:
+            - name: home
+              mountPath: /var/jenkins_home
         # 플러그인을 미리 내려받아 둔다. 컨트롤러는 기동 시 이 디렉터리를 그대로 사용한다.
         - name: install-plugins
           image: jenkins/jenkins:lts-jdk21
