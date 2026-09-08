@@ -9,7 +9,7 @@ stringData:
   # https://my.atlassian.com 에서 30일 평가 라이선스 발급 가능
   SETUP_LICENSE: __REPLACE_ME__
   SETUP_SYSADMIN_USERNAME: admin
-  SETUP_SYSADMIN_PASSWORD: __REPLACE_ME__
+  SETUP_SYSADMIN_PASSWORD: "11111111"
   SETUP_SYSADMIN_DISPLAYNAME: Administrator
   SETUP_SYSADMIN_EMAILADDRESS: admin@example.com
 ---

@@ -11,18 +11,21 @@ metadata:
   namespace: jenkins
 type: Opaque
 stringData:
-  JENKINS_ADMIN_ID: admin
+  # 값은 반드시 작은따옴표로 감싼다. 감싸지 않으면 ':' '@' '{' '*' '#' 같은
+  # 문자가 들어간 비밀번호/토큰이 YAML 파싱 에러를 일으킨다.
+  # 값 안에 작은따옴표가 있으면 '' 로 두 번 쓴다. (예: 'ab''cd')
+  JENKINS_ADMIN_ID: 'admin'
   # 운영에서는 kubectl create secret / SealedSecrets 로 대체할 것
-  JENKINS_ADMIN_PASSWORD: __REPLACE_ME__
+  JENKINS_ADMIN_PASSWORD: '11111111'
 
   # gitops 리포지토리에 이미지 태그를 커밋할 계정
   #   Bitbucket Cloud → App Password (Repositories: Write)
   #   Bitbucket DC    → HTTP access token
-  GITOPS_USER: __REPLACE_ME__
-  GITOPS_TOKEN: __REPLACE_ME__
+  GITOPS_USER: 'taos9938@gmail.com'
+  GITOPS_TOKEN: '__REPLACE_ME__'
 
   # argocd account generate-token --account cicd
-  ARGOCD_AUTH_TOKEN: __REPLACE_ME__
+  ARGOCD_AUTH_TOKEN: '__REPLACE_ME__'
 ---
 apiVersion: v1
 kind: ConfigMap
