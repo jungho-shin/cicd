@@ -37,6 +37,14 @@ bootstrap/
     bitbucket.yaml            Bitbucket StatefulSet + Service + PVC
     ingress.yaml
     nodeport.yaml             DNS 없이 노드 IP 로 접속할 때
+  jenkins/                    (선택) Jenkins 컨트롤러 - Pipelines 대체 CI
+    namespace.yaml
+    local-pv.yaml             단일 노드용 hostPath PV
+    rbac.yaml                 에이전트 Pod 생성 권한 (jenkins 네임스페이스 한정)
+    casc.yaml                 JCasC 설정 + 플러그인 목록 + Secret
+    jenkins.yaml              Jenkins StatefulSet + Service + PVC
+    ingress.yaml
+    nodeport.yaml
 
 apps/
   project.yaml                AppProject: dev / prod
@@ -250,3 +258,56 @@ Bitbucket Data Center 에는 Bitbucket Pipelines 가 없다(Cloud 전용 기능)
 | **Argo CD Image Updater** | `bootstrap/image-updater/` 적용. CI 없이 레지스트리 폴링만으로 배포까지 이어진다. 가장 간단하다. |
 | **Jenkins / GitLab Runner** | 클러스터에 별도 CI 를 올리고 gitops 리포지토리에 커밋. |
 | **Argo Workflows / Tekton** | 쿠버네티스 네이티브 CI. Bitbucket webhook 으로 트리거. |
+
+## 부록: Jenkins 자체 호스팅 (Pipelines 대체)
+
+Bitbucket Data Center 에는 Pipelines 가 없으므로 CI 를 따로 올려야 한다.
+`bootstrap/jenkins/` 는 설치 마법사 없이 **JCasC(Configuration as Code)** 로 기동하는
+Jenkins 컨트롤러 구성이다. 빌드는 컨트롤러가 아니라 kubernetes 플러그인이 띄우는
+에이전트 Pod(`kaniko` + `tools`)에서 실행된다.
+
+### 사전 조건
+
+- 메모리 2Gi + 에이전트 Pod 분량이 추가로 필요하다.
+- 동적 프로비저너가 없으면 노드에 디렉터리를 미리 만든다:
+
+```bash
+mkdir -p /data/jenkins
+chown -R 1000:1000 /data/jenkins
+```
+
+### 설치
+
+```bash
+# 시크릿 값 채우기 (관리자 비밀번호, gitops 토큰, Argo CD 토큰)
+vi bootstrap/jenkins/casc.yaml
+
+# 레지스트리 푸시용 자격증명 (kaniko 가 사용)
+kubectl -n jenkins create secret docker-registry regcred   --docker-server=my-registry.example.com   --docker-username='<user>' --docker-password='<password>'
+# 생성 후 casc.yaml 의 Pod 템플릿 volumes 주석을 해제한다
+
+kubectl kustomize bootstrap/jenkins | kubectl apply -f -
+
+# 최초 기동은 플러그인 다운로드로 1~3분 걸린다
+kubectl -n jenkins logs -f sts/jenkins -c install-plugins
+kubectl -n jenkins get pods -w
+```
+
+접속은 Ingress(`jenkins.example.com`) 또는 NodePort(`kustomization.yaml` 에서
+`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30808`).
+
+### 파이프라인 구성
+
+앱 리포지토리 루트에 `Jenkinsfile` 을 두고 `agent { label 'build' }` 로 에이전트를 지정한다.
+흐름은 `ci/bitbucket-pipelines.yml` 과 동일하다.
+
+1. `kaniko` 컨테이너에서 이미지 빌드 & 푸시
+2. `tools` 컨테이너에서 gitops 리포지토리를 clone → `kustomize edit set image` → 커밋
+   (자격증명 ID: `gitops-repo`)
+3. 필요하면 `argocd app sync/wait` (자격증명 ID: `argocd-auth-token`)
+
+잡을 코드로 관리하려면 `casc.yaml` 의 `jobs:` 블록(job-dsl) 주석을 해제한다.
+Bitbucket webhook URL 은 `http://jenkins.jenkins.svc.cluster.local:8080/bitbucket-scmsource-hook/notify`
+(클러스터 내부)로 지정한다.
+
+> Image Updater 와 Jenkins 커밋을 동시에 쓰면 이미지 태그 커밋이 충돌한다. 하나만 선택한다.

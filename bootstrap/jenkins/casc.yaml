@@ -1,0 +1,142 @@
+# ---------------------------------------------------------------------------
+# JCasC(Configuration as Code) + 플러그인 목록.
+# 설치 마법사를 건너뛰고 이 설정으로 Jenkins 를 기동한다.
+# 이 ConfigMap 을 수정한 뒤에는 컨트롤러를 재시작하거나
+# "Manage Jenkins > Configuration as Code > Reload existing configuration" 을 실행한다.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jenkins-secrets
+  namespace: jenkins
+type: Opaque
+stringData:
+  JENKINS_ADMIN_ID: admin
+  # 운영에서는 kubectl create secret / SealedSecrets 로 대체할 것
+  JENKINS_ADMIN_PASSWORD: __REPLACE_ME__
+
+  # gitops 리포지토리에 이미지 태그를 커밋할 계정
+  #   Bitbucket Cloud → App Password (Repositories: Write)
+  #   Bitbucket DC    → HTTP access token
+  GITOPS_USER: __REPLACE_ME__
+  GITOPS_TOKEN: __REPLACE_ME__
+
+  # argocd account generate-token --account cicd
+  ARGOCD_AUTH_TOKEN: __REPLACE_ME__
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-plugins
+  namespace: jenkins
+data:
+  # 버전을 적지 않으면 해당 Jenkins 버전과 호환되는 최신 플러그인을 받는다.
+  # 재현 가능한 설치가 필요하면 `plugin:version` 형태로 고정한다.
+  plugins.txt: |
+    configuration-as-code
+    kubernetes
+    workflow-aggregator
+    pipeline-stage-view
+    git
+    cloudbees-bitbucket-branch-source
+    credentials-binding
+    pipeline-utility-steps
+    job-dsl
+    timestamper
+    build-timeout
+    ws-cleanup
+    antisamy-markup-formatter
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-casc
+  namespace: jenkins
+data:
+  jenkins.yaml: |
+    jenkins:
+      systemMessage: "GitOps CI - 빌드/이미지 푸시 후 gitops 리포지토리를 갱신한다"
+      # 컨트롤러에서는 빌드를 돌리지 않고 kubernetes 에이전트만 사용한다
+      numExecutors: 0
+      mode: EXCLUSIVE
+      slaveAgentPort: 50000
+      securityRealm:
+        local:
+          allowsSignup: false
+          users:
+            - id: "${JENKINS_ADMIN_ID}"
+              password: "${JENKINS_ADMIN_PASSWORD}"
+      authorizationStrategy:
+        loggedInUsersCanDoAnything:
+          allowAnonymousRead: false
+      clouds:
+        - kubernetes:
+            name: "kubernetes"
+            serverUrl: "https://kubernetes.default.svc"
+            namespace: "jenkins"
+            # 에이전트가 컨트롤러로 되돌아올 때 쓰는 주소 (클러스터 내부)
+            jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080"
+            jenkinsTunnel: "jenkins-agent.jenkins.svc.cluster.local:50000"
+            containerCapStr: "10"
+            templates:
+              # Jenkinsfile 에서 agent { label 'build' } 로 사용한다.
+              - name: "build"
+                namespace: "jenkins"
+                label: "build"
+                serviceAccount: "jenkins-agent"
+                containers:
+                  # 도커 데몬 없이 이미지를 빌드/푸시한다(DinD 특권 컨테이너 불필요)
+                  - name: "kaniko"
+                    image: "gcr.io/kaniko-project/executor:v1.23.2-debug"
+                    command: "/busybox/cat"
+                    ttyEnabled: true
+                  # kubectl / kustomize / git / helm 포함
+                  - name: "tools"
+                    image: "alpine/k8s:1.30.2"
+                    command: "cat"
+                    ttyEnabled: true
+                # 레지스트리 푸시용 docker config.
+                # 먼저 시크릿을 만든 뒤 아래 주석을 해제한다:
+                #   kubectl -n jenkins create secret docker-registry regcred \
+                #     --docker-server=my-registry.example.com \
+                #     --docker-username='<user>' --docker-password='<password>'
+                # volumes:
+                #   - secretVolume:
+                #       secretName: "regcred"
+                #       mountPath: "/kaniko/.docker"
+
+    credentials:
+      system:
+        domainCredentials:
+          - credentials:
+              - usernamePassword:
+                  scope: GLOBAL
+                  id: "gitops-repo"
+                  description: "gitops 매니페스트 리포지토리 push 용"
+                  username: "${GITOPS_USER}"
+                  password: "${GITOPS_TOKEN}"
+              - string:
+                  scope: GLOBAL
+                  id: "argocd-auth-token"
+                  description: "argocd app sync 용 API 토큰"
+                  secret: "${ARGOCD_AUTH_TOKEN}"
+
+    unclassified:
+      location:
+        url: "http://jenkins.example.com/"
+        adminAddress: "ci@example.com"
+
+    # 파이프라인 잡을 코드로 관리하려면 job-dsl 을 사용한다.
+    # 앱 리포지토리 루트의 Jenkinsfile 을 브랜치별로 자동 인식한다.
+    # jobs:
+    #   - script: >
+    #       multibranchPipelineJob('sample-app') {
+    #         branchSources {
+    #           git {
+    #             id('sample-app')
+    #             remote('http://bitbucket.bitbucket.svc.cluster.local:7990/scm/PROJ/sample-app.git')
+    #             credentialsId('gitops-repo')
+    #           }
+    #         }
+    #         orphanedItemStrategy { discardOldItems { numToKeep(10) } }
+    #       }

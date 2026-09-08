@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-home
+  namespace: jenkins
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual        # 기본 StorageClass 를 쓰려면 이 줄 삭제
+  volumeName: jenkins-home-pv     # 기본 StorageClass 를 쓰려면 이 줄도 삭제
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins
+  namespace: jenkins
+spec:
+  type: ClusterIP
+  selector:
+    app: jenkins
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# 에이전트(JNLP) 전용 서비스. 컨트롤러 재시작과 무관하게 고정 주소를 제공한다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-agent
+  namespace: jenkins
+spec:
+  type: ClusterIP
+  selector:
+    app: jenkins
+  ports:
+    - name: agent
+      port: 50000
+      targetPort: 50000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: jenkins
+  namespace: jenkins
+spec:
+  serviceName: jenkins
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+      annotations:
+        # ConfigMap 이 바뀌면 롤링 재시작되도록 해시를 넣고 싶다면
+        # kustomize 의 configMapGenerator 를 사용한다.
+        checksum/casc: manual
+    spec:
+      serviceAccountName: jenkins
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        # 플러그인을 미리 내려받아 둔다. 컨트롤러는 기동 시 이 디렉터리를 그대로 사용한다.
+        - name: install-plugins
+          image: jenkins/jenkins:lts-jdk21
+          command:
+            - sh
+            - -c
+            - |
+              jenkins-plugin-cli \
+                --plugin-file /plugins/plugins.txt \
+                --plugin-download-directory /var/jenkins_home/plugins \
+                --latest true
+          volumeMounts:
+            - name: home
+              mountPath: /var/jenkins_home
+            - name: plugins
+              mountPath: /plugins
+      containers:
+        - name: jenkins
+          # 운영에서는 구체적인 LTS 태그로 고정할 것 (예: jenkins/jenkins:2.516.1-lts-jdk21)
+          image: jenkins/jenkins:lts-jdk21
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: agent
+              containerPort: 50000
+          envFrom:
+            # JCasC 안의 ${JENKINS_ADMIN_PASSWORD} 등이 이 값으로 치환된다
+            - secretRef:
+                name: jenkins-secrets
+          env:
+            - name: CASC_JENKINS_CONFIG
+              value: /var/jenkins_home/casc.d
+            # 설치 마법사를 건너뛰고 JCasC 설정으로 기동한다
+            - name: JAVA_OPTS
+              value: >-
+                -Djenkins.install.runSetupWizard=false
+                -Djava.awt.headless=true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: home
+              mountPath: /var/jenkins_home
+            - name: casc
+              mountPath: /var/jenkins_home/casc.d
+              readOnly: true
+          # 최초 기동은 플러그인 로딩으로 1~3분 걸린다
+          startupProbe:
+            httpGet:
+              path: /login
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: jenkins-home
+        - name: plugins
+          configMap:
+            name: jenkins-plugins
+        - name: casc
+          configMap:
+            name: jenkins-casc

@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# 단일 노드(VirtualBox 등) 클러스터용 hostPath PV.
+# 동적 프로비저너(StorageClass)가 이미 있다면 이 파일을 kustomization 에서 빼고
+# PVC 의 storageClassName: manual / volumeName 줄도 제거해 기본 StorageClass 를 쓴다.
+#
+# 적용 전 노드에서 디렉터리를 미리 만들어야 한다:
+#   mkdir -p /data/jenkins
+#   chown -R 1000:1000 /data/jenkins     # jenkins 컨테이너 UID
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jenkins-home-pv
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  hostPath:
+    path: /data/jenkins
+    type: DirectoryOrCreate
