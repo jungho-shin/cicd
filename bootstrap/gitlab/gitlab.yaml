@@ -13,7 +13,7 @@ stringData:
   #
   # GitLab 은 8자 이상 + 취약 비밀번호 목록 검사를 한다. 이 리포지토리의 다른
   # 서비스가 쓰는 '11111111' 은 거부되므로 접두사를 붙였다.
-  GITLAB_ROOT_PASSWORD: 'gitlab-11111111'
+  GITLAB_ROOT_PASSWORD: 'admin123'
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
