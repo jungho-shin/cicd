@@ -1,0 +1,177 @@
+# ---------------------------------------------------------------------------
+# GitLab Runner (kubernetes executor).
+#
+# GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
+# 러너는 등록 토큰이 있어야 기동되므로 GitLab 이 먼저 떠 있어야 한다.
+# 그래서 kustomization.yaml 에서 기본 주석 처리되어 있다.
+#
+# 토큰 발급 (GitLab 16.0+ 의 runner authentication token, glrt- 로 시작):
+#   Admin Area > CI/CD > Runners > New instance runner
+#     - Tags: build
+#     - Run untagged jobs: 체크 (Jenkinsfile 없이 바로 쓰려면)
+#   프로젝트 단위로만 쓸 거라면 Project > Settings > CI/CD > Runners 에서 발급.
+#
+# 잡 Pod 는 러너와 같은 gitlab 네임스페이스에 뜬다.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-runner
+  namespace: gitlab
+---
+# 잡 Pod 가 사용하는 계정. 별도 권한은 주지 않는다.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-runner-job
+  namespace: gitlab
+---
+# 권한 범위는 gitlab 네임스페이스로 한정한다(ClusterRole 아님).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitlab-runner
+  namespace: gitlab
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/attach"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  # 잡마다 스크립트/자격증명을 주입하는 데 쓴다
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  # services 는 .gitlab-ci.yml 의 services: (예: docker:dind) 에 필요하다
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-runner
+  namespace: gitlab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitlab-runner
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-runner
+    namespace: gitlab
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-runner-secrets
+  namespace: gitlab
+type: Opaque
+stringData:
+  # Admin Area > CI/CD > Runners 에서 발급한 authentication token (glrt-...)
+  # 운영에서는 kubectl create secret / SealedSecrets 로 대체할 것
+  RUNNER_TOKEN: '__REPLACE_ME__'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitlab-runner-config
+  namespace: gitlab
+data:
+  # __RUNNER_TOKEN__ 은 기동 시 Secret 값으로 치환된다.
+  # ConfigMap 을 그대로 config.toml 로 쓰지 않는 이유는 러너가 이 파일에
+  # 쓰기를 시도하기 때문이다(마운트된 ConfigMap 은 읽기 전용).
+  config.toml: |
+    concurrent = 4
+    check_interval = 3
+    log_level = "info"
+
+    [[runners]]
+      name = "kubernetes-runner"
+      # 클러스터 내부 주소. 외부 URL 을 쓰면 DNS/Ingress 를 거치게 된다.
+      url = "http://gitlab.gitlab.svc.cluster.local"
+      token = "__RUNNER_TOKEN__"
+      executor = "kubernetes"
+      [runners.kubernetes]
+        namespace = "gitlab"
+        service_account = "gitlab-runner-job"
+        # .gitlab-ci.yml 에서 image: 를 지정하지 않은 잡의 기본 이미지
+        image = "alpine:3.20"
+        privileged = false
+        poll_timeout = 600
+        cpu_request = "200m"
+        memory_request = "512Mi"
+        cpu_limit = "2"
+        memory_limit = "2Gi"
+        helper_cpu_request = "100m"
+        helper_memory_request = "128Mi"
+      # 캐시를 쓰려면 S3 호환 스토리지(MinIO 등)를 지정한다.
+      # [runners.cache]
+      #   Type = "s3"
+      #   Shared = true
+      #   [runners.cache.s3]
+      #     ServerAddress = "minio.minio.svc.cluster.local:9000"
+      #     BucketName = "runner-cache"
+      #     Insecure = true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitlab-runner
+  namespace: gitlab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab-runner
+  template:
+    metadata:
+      labels:
+        app: gitlab-runner
+      annotations:
+        # config.toml 이 바뀌면 수동으로 재시작한다:
+        #   kubectl -n gitlab rollout restart deploy/gitlab-runner
+        checksum/config: manual
+    spec:
+      serviceAccountName: gitlab-runner
+      containers:
+        - name: runner
+          # 서버와 메이저.마이너 버전을 맞추는 것을 권장한다
+          image: gitlab/gitlab-runner:v17.11.0
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              sed "s|__RUNNER_TOKEN__|${RUNNER_TOKEN}|" /config-template/config.toml > /etc/gitlab-runner/config.toml
+              exec gitlab-runner run --config /etc/gitlab-runner/config.toml
+          envFrom:
+            - secretRef:
+                name: gitlab-runner-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config-template
+              mountPath: /config-template
+              readOnly: true
+            - name: config
+              mountPath: /etc/gitlab-runner
+          livenessProbe:
+            exec:
+              command: ["/usr/bin/pgrep", "gitlab-runner"]
+            periodSeconds: 30
+            failureThreshold: 3
+      volumes:
+        - name: config-template
+          configMap:
+            name: gitlab-runner-config
+        - name: config
+          emptyDir: {}

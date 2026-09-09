@@ -45,6 +45,13 @@ bootstrap/
     jenkins.yaml              Jenkins StatefulSet + Service + PVC
     ingress.yaml
     nodeport.yaml
+  gitlab/                     (선택) GitLab CE 자체 호스팅 - Bitbucket 대체 (git + CI)
+    namespace.yaml
+    local-pv.yaml             단일 노드용 hostPath PV (config / data)
+    gitlab.yaml               GitLab omnibus StatefulSet + Service + PVC + Secret
+    ingress.yaml
+    nodeport.yaml
+    runner.yaml               GitLab Runner (kubernetes executor) + RBAC
   nexus/                      (선택) Nexus Repository 3 - 컨테이너 레지스트리 + 아티팩트 저장소
     namespace.yaml
     local-pv.yaml             단일 노드용 hostPath PV
@@ -84,6 +91,7 @@ ci/bitbucket-pipelines.yml    앱 리포지토리에 복사해서 사용
 | `argocd.example.com` / `grpc.argocd.example.com` | Argo CD 호스트 |
 | `my-registry.example.com` | 컨테이너 레지스트리 (Nexus 를 쓰면 `nexus-docker.example.com`) |
 | `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리 호스트 |
+| `gitlab.example.com` | GitLab 호스트 (Bitbucket 대신 쓸 때) |
 | `sample-app.example.com` | 서비스 호스트 |
 | `__REPLACE_ME__` | 실제 시크릿 값 (커밋 금지) |
 
@@ -318,6 +326,226 @@ Bitbucket webhook URL 은 `http://jenkins.jenkins.svc.cluster.local:8080/bitbuck
 (클러스터 내부)로 지정한다.
 
 > Image Updater 와 Jenkins 커밋을 동시에 쓰면 이미지 태그 커밋이 충돌한다. 하나만 선택한다.
+
+## 부록: GitLab CE 자체 호스팅 (Bitbucket 대체)
+
+Bitbucket 대신 GitLab 을 git 호스트로 쓰는 구성. Bitbucket Data Center 와 달리
+**라이선스가 필요 없고**(CE 는 무료), CI 가 내장돼 있어 Jenkins 를 따로 올리지 않아도 된다.
+
+```
+[app repo]  gitlab.example.com/my-group/sample-app
+     │  push → .gitlab-ci.yml: build/test → kaniko push → kustomize edit set image
+     ▼
+[gitops repo] gitlab.example.com/my-group/gitops-manifests   ← 이 리포지토리
+     │  webhook (클러스터 내부)
+     ▼
+[Argo CD] argocd 네임스페이스 → 클러스터에 동기화
+```
+
+`bootstrap/gitlab/` 은 omnibus 이미지(`gitlab/gitlab-ce`) 하나로 PostgreSQL·Redis·
+Gitaly·nginx 를 모두 띄우는 단일 Pod 구성이다. 공식 Helm 차트(`gitlab/gitlab`)는
+컴포넌트를 20개 넘게 쪼개므로 단일 노드 실습 환경에는 omnibus 가 훨씬 가볍다.
+
+### 사전 조건
+
+- **메모리.** 이 리포지토리에서 가장 무거운 구성요소다. 컨테이너 요청 4Gi / 제한 6Gi 를
+  잡았고 이는 `puma['worker_processes'] = 2`, `sidekiq['max_concurrency'] = 9`,
+  `prometheus_monitoring` 비활성화를 전제로 한 값이다. Argo CD 와 함께 올린다면
+  노드 메모리 **16GB 이상**을 권장한다. 러너 잡 Pod 는 그 위에 추가로 뜬다.
+- **스토리지.** `/var/opt/gitlab` 에 git 리포지토리 + DB + 아티팩트가 모두 들어간다.
+  동적 프로비저너가 없으면 노드에 디렉터리를 미리 만든다:
+
+```bash
+mkdir -p /data/gitlab/config /data/gitlab/data
+```
+
+  omnibus 컨테이너는 root 로 동작하며 내부 프로세스 UID 를 스스로 맞추므로
+  bitbucket/jenkins/nexus 와 달리 `chown` 이 필요 없다.
+
+### 설치
+
+```bash
+# root 초기 비밀번호 채우기
+vi bootstrap/gitlab/gitlab.yaml     # GITLAB_ROOT_PASSWORD
+
+kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+
+# 최초 기동은 reconfigure + DB 마이그레이션으로 8~15분 걸린다.
+# 그동안 startupProbe 가 실패해도 정상이다(20분까지 기다린다).
+kubectl -n gitlab get pods -w
+kubectl -n gitlab logs -f sts/gitlab
+```
+
+접속은 Ingress(`gitlab.example.com`) 또는 NodePort(`kustomization.yaml` 에서
+`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30080`).
+
+> NodePort 로 접속한다면 `gitlab.yaml` 의 `external_url` 도
+> `'http://<노드IP>:30080'` 으로 바꾼다. GitLab 은 이 값으로 clone 주소와
+> 리디렉션을 만들기 때문에, 실제 접속 주소와 다르면 로그인 후 튕긴다.
+
+초기 계정은 `root` / `GITLAB_ROOT_PASSWORD` 값. 이 값은 **최초 기동(DB 시딩) 때만**
+반영되고 이후에는 무시된다. 나중에 바꾸려면:
+
+```bash
+kubectl -n gitlab exec -it sts/gitlab -- gitlab-rake "gitlab:password:reset[root]"
+```
+
+`GITLAB_ROOT_PASSWORD` 를 지우고 임의 생성 비밀번호를 쓰려면 최초 기동 후 24시간 안에:
+
+```bash
+kubectl -n gitlab exec sts/gitlab -- cat /etc/gitlab/initial_root_password
+```
+
+### git+ssh
+
+NodePort 30022 로 노출되고, `gitlab_shell_ssh_port = 30022` 가 clone 주소에 반영된다.
+
+```bash
+# Profile > SSH Keys 에 공개키 등록 후
+git clone ssh://git@<노드IP>:30022/my-group/gitops-manifests.git
+```
+
+HTTPS(평문 HTTP) clone 만 쓴다면 `nodeport.yaml` 의 ssh 포트와
+`gitlab_shell_ssh_port` 설정은 지워도 된다.
+
+### GitLab Runner 등록
+
+GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
+러너는 토큰이 있어야 기동되므로 **GitLab 이 뜬 뒤에** 적용한다.
+
+1. **Admin Area > CI/CD > Runners > New instance runner**
+   - Tags: `build`
+   - *Run untagged jobs* 체크 (태그 없는 잡도 받게)
+   - 발급된 authentication token(`glrt-...`)을 복사
+2. 토큰을 채우고 러너를 켠다
+
+```bash
+vi bootstrap/gitlab/runner.yaml          # RUNNER_TOKEN
+vi bootstrap/gitlab/kustomization.yaml   # - runner.yaml 주석 해제
+
+kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+kubectl -n gitlab logs -f deploy/gitlab-runner
+```
+
+로그에 `Registering runner... succeeded` 또는 `Starting multi-runner` 가 뜨고
+Admin Area 의 러너 목록이 초록색이 되면 성공이다. 잡 Pod 는 `gitlab` 네임스페이스에
+`gitlab-runner-job` 서비스 어카운트로 뜬다(권한 없음).
+
+### 앱 리포지토리 `.gitlab-ci.yml`
+
+`ci/bitbucket-pipelines.yml` 과 같은 흐름을 GitLab CI 로 옮긴 예시다.
+**Settings > CI/CD > Variables** 에 `DOCKER_USER`, `DOCKER_PASSWORD`,
+`GITOPS_TOKEN`, `ARGOCD_AUTH_TOKEN` 을 masked 로 등록한다.
+
+```yaml
+stages: [test, build, deploy]
+
+variables:
+  DOCKER_REGISTRY: nexus-docker.example.com
+  IMAGE: nexus-docker.example.com/my-group/sample-app
+  GITOPS_REPO: gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+  GITOPS_USER: gitops-ci
+
+build-test:
+  stage: test
+  image: gradle:8-jdk21
+  script:
+    - ./gradlew clean build
+
+docker-build-push:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - AUTH=$(printf "%s:%s" "$DOCKER_USER" "$DOCKER_PASSWORD" | base64 | tr -d '\n')
+    - printf '{"auths":{"%s":{"auth":"%s"}}}' "$DOCKER_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile Dockerfile
+        --destination "$IMAGE:$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+        --insecure --skip-tls-verify
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main"
+
+update-gitops:
+  stage: deploy
+  image: line/kubectl-kustomize:latest
+  variables:
+    DEPLOY_ENV: dev
+  script:
+    - git config --global user.email "ci@example.com"
+    - git config --global user.name "gitlab-ci"
+    - git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
+    - cd gitops/manifests/sample-app/overlays/${DEPLOY_ENV}
+    - kustomize edit set image "my-registry.example.com/my-workspace/sample-app=${IMAGE}:${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
+    - cd $CI_PROJECT_DIR/gitops
+    - git add -A
+    - git diff --cached --quiet && exit 0
+    - git commit -m "chore(${DEPLOY_ENV}): sample-app -> ${CI_COMMIT_SHORT_SHA} [skip ci]"
+    - git push origin HEAD:main
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+```
+
+`main` 브랜치의 prod 배포는 위 잡을 복사해 `DEPLOY_ENV: prod`,
+`when: manual` 을 주면 `ci/bitbucket-pipelines.yml` 의 수동 승인과 같아진다.
+
+- `--insecure --skip-tls-verify` 는 Nexus 를 평문 HTTP 로 쓸 때만 필요하다.
+- `[skip ci]` 는 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
+
+### Argo CD 연동
+
+**1. 리포지토리 자격증명** — GitLab 은 App Password 대신 **Deploy token**(읽기 전용,
+Argo CD 용)과 **Project/Group access token**(쓰기, CI 용)을 쓴다.
+
+Argo CD 용: 프로젝트 **Settings > Repository > Deploy tokens** 에서
+`read_repository` 스코프로 발급.
+
+```bash
+kubectl -n argocd create secret generic repo-gitlab-https \
+  --from-literal=type=git \
+  --from-literal=url=http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git \
+  --from-literal=username='<deploy-token-username>' \
+  --from-literal=password='<deploy-token>'
+kubectl -n argocd label secret repo-gitlab-https argocd.argoproj.io/secret-type=repository
+```
+
+`bootstrap/argocd/configs/repo-bitbucket.yaml` 은 `configs/kustomization.yaml` 의
+resources 에서 제외하고, `apps/` 의 모든 `repoURL` 을 위 주소로 바꾼다.
+
+**2. webhook** — GitLab 은 webhook secret 을 지원하므로 Bitbucket Cloud 와 달리
+검증을 걸 수 있다. `bootstrap/argocd/configs/argocd-secret.yaml` 에 항목을 추가한다.
+
+```yaml
+stringData:
+  webhook.gitlab.secret: __REPLACE_ME__
+```
+
+리포지토리 **Settings > Webhooks** 에서:
+
+- URL: `http://argocd-server.argocd.svc.cluster.local/api/webhook`
+- Secret token: 위와 같은 값
+- Trigger: `Push events`
+
+클러스터 내부 주소이므로 외부 노출이 필요 없다. 단, GitLab 의
+**Admin Area > Settings > Network > Outbound requests** 에서
+*Allow requests to the local network from webhooks* 를 켜야 한다.
+(기본값은 차단이라 webhook 이 조용히 실패한다.)
+
+### Bitbucket / Jenkins 와의 관계
+
+셋을 다 올릴 필요는 없다. 조합을 하나 고른다.
+
+| 구성 | git 호스트 | CI | 비고 |
+|---|---|---|---|
+| **GitLab 단독** | GitLab CE | GitLab CI + Runner | 라이선스 불필요, 컴포넌트 최소. 이 부록의 기본. |
+| Bitbucket + Jenkins | Bitbucket DC | Jenkins | Bitbucket DC 라이선스 필요. |
+| Bitbucket Cloud | Bitbucket Cloud | Pipelines | `ci/bitbucket-pipelines.yml`. 외부 SaaS. |
+
+GitLab 을 쓴다면 `bootstrap/bitbucket/` 과 `bootstrap/jenkins/` 는 적용하지 않는다.
+레지스트리는 GitLab 내장 registry 를 끄고(`registry['enable'] = false`)
+`bootstrap/nexus/` 를 쓰도록 해 뒀다. GitLab 내장 registry 를 쓰려면
+`external_url` 과 별도의 registry 호스트/인그레스를 추가로 잡아야 한다.
 
 ## 부록: Nexus Repository 3 자체 호스팅
 
