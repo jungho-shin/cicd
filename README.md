@@ -208,6 +208,133 @@ kubectl kustomize manifests/sample-app/overlays/dev
 kubectl kustomize manifests/sample-app/overlays/prod
 ```
 
+## 부록: kind 로 로컬 클러스터 구성하기
+
+VirtualBox VM 안에 kind 로 클러스터를 만드는 경우, **NodePort 로는 VM 밖에서 접속할 수 없다.**
+kind 노드는 VM 안의 Docker 컨테이너이고, `extraPortMappings` 로 명시한 포트만
+VM 의 네트워크로 올라오기 때문이다. 각 부록의 `nodeport.yaml` 안내는 kind 가 아닌
+일반 클러스터(VM 자체가 노드인 경우) 기준이다.
+
+kind 에서는 **80/443 만 매핑하고 나머지는 Ingress + hosts 파일로 접속한다.**
+
+### 1. 클러스터 생성
+
+```yaml
+# kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+    # hostPath PV 를 VM 디스크에 남기려면 필수. 없으면 클러스터를 지울 때
+    # /data 아래(Bitbucket 리포지토리, Jenkins 잡, Nexus blob)가 전부 사라진다.
+    extraMounts:
+      - hostPath: /data
+        containerPath: /data
+  - role: worker
+    extraMounts:
+      - hostPath: /data
+        containerPath: /data
+  - role: worker
+    extraMounts:
+      - hostPath: /data
+        containerPath: /data
+```
+
+```bash
+kind create cluster --name devops --config kind-config.yaml
+```
+
+> Kubernetes 1.31+ 는 kubeadm 설정이 v1beta4 로 바뀌면서 `kubeletExtraArgs` 가
+> 맵에서 리스트(`- name: / value:`) 형식이 됐다. 위 맵 형식으로도 라벨이 붙는지
+> 반드시 확인한다:
+> `kubectl get node devops-control-plane -o jsonpath='{.metadata.labels.ingress-ready}'`
+
+### 2. ingress-nginx 설치
+
+**kind 전용 매니페스트를 써야 한다.** cloud/baremetal 판은 `LoadBalancer` 서비스만
+만들고 hostPort 를 쓰지 않아, kind 에서는 `EXTERNAL-IP <pending>` 인 채로 80 포트가
+열리지 않는다.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/kind/deploy.yaml
+
+# kind 판에도 nodeSelector 는 없다. control-plane 에만 80/443 매핑이 있으므로
+# 컨트롤러를 거기에 고정하지 않으면 worker 에 떠서 접속이 안 된다.
+kubectl -n ingress-nginx patch deploy ingress-nginx-controller --type=merge -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux","ingress-ready":"true"}}}}}'
+
+kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s
+kubectl -n ingress-nginx get pods -o wide     # NODE 가 control-plane 이어야 한다
+```
+
+- 리포지토리 org 는 `kubernetes/ingress-nginx` 다 (`kubernetes-sigs` 아님).
+  `main` 브랜치에는 static 매니페스트가 없으므로 릴리스 태그를 지정한다.
+- `ingress-nginx-controller` 서비스가 `LoadBalancer` / `EXTERNAL-IP <pending>` 으로
+  남는 것은 정상이다. kind 에 LB 프로바이더가 없을 뿐, 실제 통로는
+  hostPort 80/443 → docker 포트 매핑이다.
+
+### 3. 접속 확인
+
+```bash
+# VM 안에서
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: nexus.example.com' http://localhost/
+```
+
+`200` 또는 `302` 면 클러스터 쪽은 끝이다. `Connection reset` 이면 컨트롤러가
+control-plane 이 아닌 노드에 떠 있는 것이고, `404` 면 Host 헤더가 Ingress 규칙과
+맞지 않는 것이다.
+
+> `docker exec <노드> ss -lntp | grep ':80 '` 이 비어 있어도 정상이다.
+> hostPort 는 리스닝 소켓이 아니라 CNI portmap 의 iptables DNAT 으로 동작한다.
+> 매핑 확인은 `docker ps --format 'table {{.Names}}\t{{.Ports}}'` 로 한다.
+
+### 4. HostPC 의 hosts 파일
+
+VM IP 를 각 Ingress 호스트에 매핑한다. Windows 는 관리자 권한으로
+`C:\Windows\System32\drivers\etc\hosts` 를 편집한다.
+
+```
+192.168.45.192  nexus.example.com
+192.168.45.192  nexus-docker.example.com
+192.168.45.192  nexus-docker-group.example.com
+192.168.45.192  jenkins.example.com
+192.168.45.192  bitbucket.example.com
+192.168.45.192  gitlab.example.com
+192.168.45.192  argocd.example.com
+192.168.45.192  grpc.argocd.example.com
+192.168.45.192  sample-app.dev.example.com
+```
+
+리눅스/맥은 `/etc/hosts` 에 같은 내용을 넣는다. 등록 후
+`ipconfig /flushdns` (Windows) 를 실행하고, 크롬은 자체 DNS 캐시가 있어
+재시작이 필요할 수 있다.
+
+### kind 사용 시 주의
+
+- **`nodeport.yaml` 은 적용하지 않는다.** 각 서비스의 `kustomization.yaml` 에서
+  주석 처리된 상태가 kind 기준 기본값이다.
+- **Docker 레지스트리는 Ingress 호스트로 접근한다.** Nexus 의 30082/30083 대신
+  `nexus-docker.example.com` 을 쓴다. 평문 HTTP 이므로 노드의
+  `insecure-registries` / containerd `hosts.toml` 설정은 그대로 필요하다
+  (`부록: Nexus` 참고). kind 노드에 설정하려면 `docker exec` 로 들어가야 하며,
+  클러스터를 다시 만들면 사라진다.
+- **hostPath PV 는 kind 노드 컨테이너 안이다.** `extraMounts` 없이 만든
+  클러스터에서 `/data/jenkins` 는 VM 이 아니라 노드 컨테이너의 경로다.
+  `kind delete cluster` 하면 같이 사라지므로, 백업은
+  `docker exec <노드> tar czf - /data > backup.tar.gz` 로 받는다.
+
 ## 부록: Bitbucket Data Center 자체 호스팅
 
 Bitbucket Cloud 대신 클러스터 안에 Bitbucket 을 직접 올리는 구성. 폐쇄망이거나
