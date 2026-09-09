@@ -112,6 +112,10 @@ spec:
             #   puma / sidekiq /        메모리 절감. 이 값들이 없으면 소규모
             #   prometheus_monitoring   클러스터에서 6Gi 를 넘기기 쉽다.
             #   registry                컨테이너 레지스트리는 Nexus(bootstrap/nexus/)를 쓴다.
+            #   monitoring_whitelist    /-/health 같은 헬스체크 엔드포인트를 부를 수 있는 출발지 IP.
+            #                           기본값은 127.0.0.0/8 뿐이고, 목록 밖에서 오면 403 이
+            #                           아니라 404 를 돌려준다. kubelet 프로브는 노드 IP 에서
+            #                           오므로, 빼면 startupProbe 가 멀쩡한 GitLab 을 계속 죽인다.
             - name: GITLAB_OMNIBUS_CONFIG
               value: |
                 external_url 'http://gitlab.example.com'
@@ -132,6 +136,10 @@ spec:
                 gitlab_rails['env'] = { 'MALLOC_ARENA_MAX' => '2' }
 
                 registry['enable'] = false
+
+                gitlab_rails['monitoring_whitelist'] = [
+                  '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'
+                ]
           resources:
             requests:
               cpu: "1"
@@ -155,6 +163,7 @@ spec:
               path: /-/health
               port: http
             periodSeconds: 15
+            timeoutSeconds: 10
             failureThreshold: 80
           readinessProbe:
             httpGet:
