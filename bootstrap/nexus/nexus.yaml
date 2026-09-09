@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nexus-data
+  namespace: nexus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual        # 기본 StorageClass 를 쓰려면 이 줄 삭제
+  volumeName: nexus-data-pv       # 기본 StorageClass 를 쓰려면 이 줄도 삭제
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexus
+  namespace: nexus
+spec:
+  type: ClusterIP
+  selector:
+    app: nexus
+  ports:
+    # UI + maven/npm 등 모든 리포지토리 (/repository/<name>)
+    - name: http
+      port: 8081
+      targetPort: 8081
+    # Docker 는 리포지토리마다 별도 포트(커넥터)가 필요하다.
+    # 아래 두 포트는 Nexus UI 에서 리포지토리를 만들 때 지정해야 열린다.
+    #   docker-hosted : HTTP 8082  (push/pull)
+    #   docker-group  : HTTP 8083  (pull 전용, docker-hub 프록시 + hosted 묶음)
+    - name: docker-hosted
+      port: 8082
+      targetPort: 8082
+    - name: docker-group
+      port: 8083
+      targetPort: 8083
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nexus
+  namespace: nexus
+spec:
+  serviceName: nexus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nexus
+  template:
+    metadata:
+      labels:
+        app: nexus
+    spec:
+      securityContext:
+        runAsUser: 200
+        runAsGroup: 200
+        fsGroup: 200
+      initContainers:
+        # hostPath PV 는 kubelet 이 fsGroup 을 적용해 주지 않는다.
+        # (type: DirectoryOrCreate 로 만들어진 디렉터리는 root:root 0755)
+        # 그래서 root 로 한 번 소유권을 맞춰 준다. 동적 프로비저너를 쓰면 불필요.
+        - name: fix-permissions
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /nexus-data
+              chown -R 200:200 /nexus-data
+              chmod 755 /nexus-data
+          volumeMounts:
+            - name: data
+              mountPath: /nexus-data
+      containers:
+        - name: nexus
+          # 운영에서는 구체적인 태그로 고정할 것
+          image: sonatype/nexus3:3.70.1
+          ports:
+            - name: http
+              containerPort: 8081
+            - name: docker-hosted
+              containerPort: 8082
+            - name: docker-group
+              containerPort: 8083
+          env:
+            # 기본값은 -Xms2703m -Xmx2703m 로 노드 메모리를 크게 먹는다.
+            # 소규모 클러스터에서는 아래처럼 줄인다.
+            - name: INSTALL4J_ADD_VM_PARAMS
+              value: >-
+                -Xms1200m -Xmx1200m
+                -XX:MaxDirectMemorySize=1200m
+                -Djava.util.prefs.userRoot=/nexus-data/javaprefs
+            # false 로 두면 최초 admin 비밀번호가 admin123 으로 고정된다.
+            # 기본값(true)이면 /nexus-data/admin.password 에 임의 값이 생성된다:
+            #   kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password
+            - name: NEXUS_SECURITY_RANDOMPASSWORD
+              value: "false"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          volumeMounts:
+            - name: data
+              mountPath: /nexus-data
+          # 최초 기동은 DB 초기화로 2~4분 걸린다
+          startupProbe:
+            httpGet:
+              path: /service/rest/v1/status
+              port: http
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /service/rest/v1/status
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /service/rest/v1/status
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nexus-data

@@ -1,0 +1,67 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexus
+  namespace: nexus
+  annotations:
+    # 아티팩트(jar, 이미지 레이어) 업로드를 위해 크기 제한 해제
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: nexus.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus
+                port:
+                  name: http
+---
+# ---------------------------------------------------------------------------
+# Docker 레지스트리는 경로가 아니라 호스트 단위로만 동작한다(/v2/ 가 루트여야 함).
+# 그래서 UI 와는 별도의 호스트를 쓴다.
+#
+#   nexus-docker.example.com        → docker-hosted (8082), push/pull
+#   nexus-docker-group.example.com  → docker-group  (8083), pull 전용
+#
+# docker login/push 는 HTTPS 가 기본이다. TLS 가 없으면 각 노드의
+# /etc/docker/daemon.json 에 insecure-registries 를 넣거나,
+# containerd 라면 hosts.toml 에 skip_verify 를 설정해야 한다.
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexus-docker
+  namespace: nexus
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: nexus-docker.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus
+                port:
+                  name: docker-hosted
+    - host: nexus-docker-group.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nexus
+                port:
+                  name: docker-group

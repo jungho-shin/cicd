@@ -45,6 +45,12 @@ bootstrap/
     jenkins.yaml              Jenkins StatefulSet + Service + PVC
     ingress.yaml
     nodeport.yaml
+  nexus/                      (선택) Nexus Repository 3 - 컨테이너 레지스트리 + 아티팩트 저장소
+    namespace.yaml
+    local-pv.yaml             단일 노드용 hostPath PV
+    nexus.yaml                Nexus StatefulSet + Service + PVC
+    ingress.yaml              UI / docker-hosted / docker-group 인그레스
+    nodeport.yaml
 
 apps/
   project.yaml                AppProject: dev / prod
@@ -76,7 +82,8 @@ ci/bitbucket-pipelines.yml    앱 리포지토리에 복사해서 사용
 |---|---|
 | `my-workspace` | Bitbucket 워크스페이스 |
 | `argocd.example.com` / `grpc.argocd.example.com` | Argo CD 호스트 |
-| `my-registry.example.com` | 컨테이너 레지스트리 |
+| `my-registry.example.com` | 컨테이너 레지스트리 (Nexus 를 쓰면 `nexus-docker.example.com`) |
+| `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리 호스트 |
 | `sample-app.example.com` | 서비스 호스트 |
 | `__REPLACE_ME__` | 실제 시크릿 값 (커밋 금지) |
 
@@ -311,3 +318,155 @@ Bitbucket webhook URL 은 `http://jenkins.jenkins.svc.cluster.local:8080/bitbuck
 (클러스터 내부)로 지정한다.
 
 > Image Updater 와 Jenkins 커밋을 동시에 쓰면 이미지 태그 커밋이 충돌한다. 하나만 선택한다.
+
+## 부록: Nexus Repository 3 자체 호스팅
+
+컨테이너 레지스트리와 빌드 아티팩트 저장소를 클러스터 안에 두는 구성.
+`my-registry.example.com` 같은 외부 레지스트리 대신 쓰거나, 폐쇄망에서
+Docker Hub / Maven Central / npmjs 프록시로 쓴다.
+
+```
+[Jenkins 에이전트] kaniko  ──push──▶ [Nexus docker-hosted :8082]
+                                          │
+[쿠버네티스 노드]  image pull ◀───────────┘  (regcred)
+[빌드 컨테이너]   maven/npm ──▶ [Nexus maven-group / npm-group :8081]
+```
+
+### 사전 조건
+
+- **메모리.** Nexus 힙 1.2Gi + 다이렉트 메모리로 컨테이너 요청 2Gi, 제한 3Gi 를 잡았다.
+  Argo CD + Bitbucket + Jenkins 까지 같이 올린다면 노드 메모리 **16GB 이상**을 권장한다.
+  더 줄이려면 `bootstrap/nexus/nexus.yaml` 의 `INSTALL4J_ADD_VM_PARAMS` 를 조정한다.
+- **스토리지.** 프록시 캐시가 쌓이므로 넉넉히 잡는다(기본 50Gi).
+  동적 프로비저너가 없으면 노드에 디렉터리를 미리 만든다:
+
+```bash
+mkdir -p /data/nexus
+chown -R 200:200 /data/nexus     # nexus 컨테이너 UID
+```
+
+### 설치
+
+```bash
+kubectl kustomize bootstrap/nexus | kubectl apply -f -
+
+# 최초 기동은 DB 초기화로 2~4분 걸린다
+kubectl -n nexus get pods -w
+kubectl -n nexus logs -f sts/nexus
+```
+
+접속은 Ingress(`nexus.example.com`) 또는 NodePort(`kustomization.yaml` 에서
+`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30081`).
+
+초기 계정은 `admin` / `admin123` (`NEXUS_SECURITY_RANDOMPASSWORD: "false"` 로 고정).
+로그인 후 **즉시 비밀번호를 바꾼다.** 임의 비밀번호(기본 동작)를 쓰려면 해당 env 를
+`"true"` 로 바꾸고 아래로 확인한다.
+
+```bash
+kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password; echo
+```
+
+### 레지스트리 구성 (UI 에서 1회 설정)
+
+**Settings > Repository > Repositories > Create repository**
+
+| 리포지토리 | 타입 | 설정 |
+|---|---|---|
+| `docker-hosted` | docker (hosted) | HTTP 커넥터 **8082**, Deployment policy `Allow redeploy` |
+| `docker-hub` | docker (proxy) | Remote storage `https://registry-1.docker.io`, Docker Index `Use Docker Hub` |
+| `docker-group` | docker (group) | HTTP 커넥터 **8083**, 멤버 `docker-hosted`, `docker-hub` |
+| `maven-central` | maven2 (proxy) | Remote storage `https://repo1.maven.org/maven2/` |
+| `maven-releases` / `maven-snapshots` | maven2 (hosted) | 기본 생성돼 있음 |
+| `maven-group` | maven2 (group) | 위 셋을 멤버로 |
+| `npm-proxy` | npm (proxy) | Remote storage `https://registry.npmjs.org` |
+
+포트 8082/8083 은 **커넥터를 만들어야 열린다.** Service/NodePort 에는 이미
+포트가 뚫려 있으므로 UI 설정만 하면 된다.
+
+`docker login` 을 쓰려면 **Settings > Security > Realms** 에서
+`Docker Bearer Token Realm` 을 Active 로 옮긴다. 익명 pull 을 막으려면
+**Security > Anonymous Access** 를 끈다.
+
+### TLS 없이 쓸 때 (로컬 클러스터)
+
+Docker/containerd 는 레지스트리에 HTTPS 로 접속한다. NodePort 나 평문 Ingress 를
+쓴다면 각 노드에 예외를 등록해야 이미지 pull/push 가 된다.
+
+```bash
+# docker 런타임
+cat >/etc/docker/daemon.json <<'JSON'
+{ "insecure-registries": ["<노드IP>:30082", "<노드IP>:30083"] }
+JSON
+systemctl restart docker
+
+# containerd (k8s 1.27+ 기본)
+mkdir -p /etc/containerd/certs.d/<노드IP>:30082
+cat >/etc/containerd/certs.d/<노드IP>:30082/hosts.toml <<'TOML'
+server = "http://<노드IP>:30082"
+[host."http://<노드IP>:30082"]
+  capabilities = ["pull", "resolve", "push"]
+  skip_verify = true
+TOML
+systemctl restart containerd
+```
+
+클러스터 내부에서만 쓴다면 `nexus.nexus.svc.cluster.local:8082` 를 그대로 쓸 수 있지만,
+이 주소도 평문이므로 위와 같은 예외 등록이 필요하다.
+
+### Jenkins / Argo CD 연동
+
+**1. kaniko push 자격증명** — `bootstrap/jenkins/` 의 `regcred` 를 Nexus 주소로 만든다.
+
+```bash
+kubectl -n jenkins create secret docker-registry regcred \
+  --docker-server=nexus-docker.example.com \
+  --docker-username='<nexus-user>' --docker-password='<password>'
+```
+
+`bootstrap/jenkins/casc.yaml` 의 Pod 템플릿 `volumes:` 주석을 해제하면
+kaniko 가 `/kaniko/.docker` 로 이 시크릿을 읽는다.
+
+**2. 앱 네임스페이스 pull secret** — 이미지를 내려받을 네임스페이스마다 필요하다.
+
+```bash
+kubectl -n sample-app-dev create secret docker-registry regcred \
+  --docker-server=nexus-docker.example.com \
+  --docker-username='<nexus-user>' --docker-password='<password>'
+```
+
+`manifests/sample-app/base/deployment.yaml` 에 `imagePullSecrets: [{name: regcred}]` 를 추가한다.
+
+**3. 이미지 주소 교체** — `my-registry.example.com` 을 쓰는 곳을 모두 바꾼다.
+
+```bash
+grep -rl 'my-registry.example.com' apps/ manifests/ ci/ bootstrap/
+```
+
+**4. Maven/npm 캐시** — Jenkinsfile 의 빌드 컨테이너에서 Nexus 를 미러로 지정한다.
+
+```xml
+<!-- ~/.m2/settings.xml -->
+<mirror>
+  <id>nexus</id>
+  <mirrorOf>*</mirrorOf>
+  <url>http://nexus.nexus.svc.cluster.local:8081/repository/maven-group/</url>
+</mirror>
+```
+
+```bash
+npm config set registry http://nexus.nexus.svc.cluster.local:8081/repository/npm-proxy/
+```
+
+**5. Image Updater** — `bootstrap/image-updater/` 를 쓴다면 Nexus 자격증명을 등록한다.
+Nexus 는 표준 Docker Registry v2 API 를 제공하므로 별도 설정 없이 동작한다.
+
+### 백업
+
+`/nexus-data` 전체가 상태다. blob store 와 내장 DB 가 함께 들어 있으므로
+Pod 를 멈춘 뒤 디렉터리를 통째로 복사하는 것이 가장 확실하다.
+
+```bash
+kubectl -n nexus scale sts/nexus --replicas=0
+tar czf nexus-$(date +%F).tar.gz -C /data nexus
+kubectl -n nexus scale sts/nexus --replicas=1
+```
