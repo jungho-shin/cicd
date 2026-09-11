@@ -16,7 +16,7 @@ stringData:
   # 값 안에 작은따옴표가 있으면 '' 로 두 번 쓴다. (예: 'ab''cd')
   JENKINS_ADMIN_ID: 'admin'
   # 운영에서는 kubectl create secret / SealedSecrets 로 대체할 것
-  JENKINS_ADMIN_PASSWORD: '11111111'
+  JENKINS_ADMIN_PASSWORD: 'admin123'
 
   # gitops 리포지토리에 이미지 태그를 커밋할 계정
   #   Bitbucket Cloud → App Password (Repositories: Write)
