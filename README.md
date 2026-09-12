@@ -418,7 +418,38 @@ kubectl -n gitlab logs -f sts/gitlab
 > 리디렉션을 만들기 때문에, 실제 접속 주소와 다르면 로그인 후 튕긴다.
 
 초기 계정은 `root` / `GITLAB_ROOT_PASSWORD` 값. 이 값은 **최초 기동(DB 시딩) 때만**
-반영되고 이후에는 무시된다. 나중에 바꾸려면:
+반영되고 이후에는 무시된다.
+
+> **비밀번호가 약하면 컨테이너가 exit 1 로 죽는다.** GitLab 은 취약 비밀번호 사전
+> 검사를 하는데, 거부되면 시드(`003_admin.rb`)가 실패하고 `gitlab-ctl reconfigure`
+> 전체가 `Infra Phase failed` 로 끝난다. 파드는 `Error` → 재시작을 반복하고, 증상만
+> 보면 메모리나 스토리지 문제처럼 보인다. 직전 컨테이너 로그 끝을 확인한다.
+>
+> ```bash
+> kubectl -n gitlab describe pod gitlab-0 | grep -A6 "Last State"   # Exit Code: 1
+> kubectl -n gitlab logs gitlab-0 --previous --tail=60
+> ```
+>
+> `--> Password must not contain commonly used combinations of words and letters`
+> 가 보이면 이 경우다. `11111111`, `admin123` 은 실제로 거부됐다. Secret 을 고친 뒤
+> **파드를 직접 지워야** 반영된다 — `envFrom` 으로 읽는 Secret 은 값이 바뀌어도
+> 파드를 자동 재시작시키지 않고, Ready 가 아닌 파드는 StatefulSet 롤아웃으로도
+> 교체되지 않는다.
+>
+> ```bash
+> kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+> kubectl -n gitlab delete pod gitlab-0
+> ```
+>
+> 그래도 admin 계정이 안 만들어지면 DB 가 어중간하게 시딩된 것이다. 아래로 초기화한다.
+>
+> ```bash
+> kubectl -n gitlab delete sts gitlab
+> sudo rm -rf /data/gitlab/config/* /data/gitlab/data/*
+> kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+> ```
+
+나중에 바꾸려면:
 
 ```bash
 kubectl -n gitlab exec -it sts/gitlab -- gitlab-rake "gitlab:password:reset[root]"

@@ -11,9 +11,14 @@ stringData:
   # root 계정 초기 비밀번호. 최초 기동(DB 시딩) 때만 반영되고, 이후에는
   # 값을 바꿔도 무시된다. 비밀번호 변경은 UI 나 rails 콘솔로 한다.
   #
-  # GitLab 은 8자 이상 + 취약 비밀번호 목록 검사를 한다. 이 리포지토리의 다른
-  # 서비스가 쓰는 '11111111' 은 거부되므로 접두사를 붙였다.
-  GITLAB_ROOT_PASSWORD: 'admin123'
+  # GitLab 은 8자 이상 + 취약 비밀번호 사전 검사를 한다. 흔한 조합은 거부되고,
+  # 거부되면 시드(003_admin.rb)가 실패하면서 gitlab-ctl reconfigure 전체가
+  # Infra Phase failed 로 끝나 컨테이너가 exit 1 로 죽는다. 증상이 비밀번호와
+  # 무관해 보이므로 로그 끝의 다음 문구로 판별한다:
+  #   Could not create the default administrator account:
+  #   --> Password must not contain commonly used combinations of words and letters
+  # 실제로 '11111111' 과 'admin123' 둘 다 거부됐다. 사전에 없는 조합을 쓴다.
+  GITLAB_ROOT_PASSWORD: 'Kx7Qm2Vt9Zpr'
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
