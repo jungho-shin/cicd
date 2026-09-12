@@ -1,4 +1,4 @@
-# Image Updater 가 Bitbucket gitops 리포지토리에 커밋할 때 쓰는 자격증명
+# Image Updater 가 GitLab gitops 리포지토리에 커밋할 때 쓰는 자격증명
 apiVersion: v1
 kind: Secret
 metadata:
@@ -6,5 +6,5 @@ metadata:
   namespace: argocd
 type: Opaque
 stringData:
-  username: __REPLACE_ME__     # Bitbucket 사용자명
-  password: __REPLACE_ME__     # App Password (Repositories: Read, Write)
+  username: __REPLACE_ME__     # project access token 의 이름
+  password: __REPLACE_ME__     # Project access token (write_repository)

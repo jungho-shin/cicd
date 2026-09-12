@@ -6,7 +6,7 @@ metadata:
   annotations:
     repo: sample-app          # notifications 템플릿에서 사용
     # argocd-image-updater 사용 시:
-    argocd-image-updater.argoproj.io/image-list: app=my-registry.example.com/my-workspace/sample-app
+    argocd-image-updater.argoproj.io/image-list: app=my-registry.example.com/my-group/sample-app
     argocd-image-updater.argoproj.io/app.update-strategy: newest-build
     argocd-image-updater.argoproj.io/app.allow-tags: regexp:^dev-[0-9a-f]{7}$
     argocd-image-updater.argoproj.io/write-back-method: git
@@ -16,7 +16,7 @@ metadata:
 spec:
   project: dev
   source:
-    repoURL: https://bitbucket.org/my-workspace/gitops-manifests.git
+    repoURL: http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
     targetRevision: main
     path: manifests/sample-app/overlays/dev
   destination:
@@ -49,7 +49,7 @@ metadata:
 spec:
   project: prod
   source:
-    repoURL: https://bitbucket.org/my-workspace/gitops-manifests.git
+    repoURL: http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
     targetRevision: main
     path: manifests/sample-app/overlays/prod
   destination:

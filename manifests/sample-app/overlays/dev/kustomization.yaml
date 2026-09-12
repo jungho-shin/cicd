@@ -12,10 +12,10 @@ replicas:
   - name: sample-app
     count: 1
 
-# Bitbucket Pipelines 가 `kustomize edit set image` 로 이 값을 갱신하고
+# GitLab CI 가 `kustomize edit set image` 로 이 값을 갱신하고
 # gitops 리포지토리에 커밋한다. Argo CD 가 그 커밋을 감지해 배포한다.
 images:
-  - name: my-registry.example.com/my-workspace/sample-app
+  - name: my-registry.example.com/my-group/sample-app
     newTag: dev-0000000
 
 patches:

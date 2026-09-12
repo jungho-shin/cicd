@@ -8,7 +8,7 @@ metadata:
 spec:
   description: 개발 환경 애플리케이션
   sourceRepos:
-    - https://bitbucket.org/my-workspace/*
+    - http://gitlab.gitlab.svc.cluster.local/my-group/*
   destinations:
     - server: https://kubernetes.default.svc
       namespace: 'dev-*'
@@ -24,7 +24,7 @@ spec:
       kind: LimitRange
   roles:
     - name: ci
-      description: Bitbucket Pipelines 동기화 트리거용
+      description: GitLab CI 동기화 트리거용
       policies:
         - p, proj:dev:ci, applications, sync, dev/*, allow
         - p, proj:dev:ci, applications, get, dev/*, allow
@@ -39,7 +39,7 @@ metadata:
 spec:
   description: 운영 환경 애플리케이션
   sourceRepos:
-    - https://bitbucket.org/my-workspace/gitops-manifests.git
+    - http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: 'prod-*'

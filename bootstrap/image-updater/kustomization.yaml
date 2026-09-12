@@ -4,7 +4,7 @@ namespace: argocd
 
 # Argo CD Image Updater: 레지스트리에 새 이미지 태그가 올라오면
 # gitops 리포지토리에 write-back 커밋을 남긴다.
-# (Bitbucket Pipelines 에서 직접 커밋한다면 이 컴포넌트는 생략 가능)
+# (GitLab CI 에서 직접 커밋한다면 이 컴포넌트는 생략 가능)
 resources:
   - https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/v0.16.0/manifests/install.yaml
   - git-creds.yaml

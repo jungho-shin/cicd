@@ -3,7 +3,7 @@ kind: Component
 
 # install.yaml 에 없는 신규 리소스만 resources 로 추가한다.
 resources:
-  - repo-bitbucket.yaml
+  - repo-gitlab.yaml
 
 # install.yaml 에 이미 존재하는 ConfigMap/Secret 은 patch 로 병합한다.
 # (resources 로 넣으면 "already registered id" 오류가 난다)

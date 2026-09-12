@@ -6,40 +6,40 @@ kind: ConfigMap
 metadata:
   name: argocd-notifications-cm
 data:
-  # Bitbucket 커밋에 배포 상태(build status) 를 되돌려 기록한다.
-  service.webhook.bitbucket: |
-    url: https://api.bitbucket.org/2.0
+  # GitLab 커밋에 배포 상태(commit status) 를 되돌려 기록한다.
+  # 자체 호스팅이므로 API 주소는 클러스터 내부 주소를 쓴다.
+  service.webhook.gitlab: |
+    url: http://gitlab.gitlab.svc.cluster.local/api/v4
     headers:
-      - name: Authorization
-        value: Bearer $bitbucket-token
+      - name: PRIVATE-TOKEN
+        value: $gitlab-token
       - name: Content-Type
         value: application/json
 
+  # path 의 프로젝트 경로는 URL 인코딩해야 한다(my-group/repo → my-group%2Frepo).
   template.app-deployed: |
     webhook:
-      bitbucket:
+      gitlab:
         method: POST
-        path: /repositories/my-workspace/{{.app.metadata.annotations.repo}}/commit/{{.app.status.operationState.syncResult.revision}}/statuses/build
+        path: /projects/my-group%2F{{.app.metadata.annotations.repo}}/statuses/{{.app.status.operationState.syncResult.revision}}
         body: |
           {
-            "key": "argocd-{{.app.metadata.name}}",
-            "state": "SUCCESSFUL",
-            "name": "Argo CD Sync",
-            "url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
+            "state": "success",
+            "name": "argocd/{{.app.metadata.name}}",
+            "target_url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
             "description": "Synced to {{.app.status.sync.revision}}"
           }
 
   template.app-sync-failed: |
     webhook:
-      bitbucket:
+      gitlab:
         method: POST
-        path: /repositories/my-workspace/{{.app.metadata.annotations.repo}}/commit/{{.app.status.operationState.syncResult.revision}}/statuses/build
+        path: /projects/my-group%2F{{.app.metadata.annotations.repo}}/statuses/{{.app.status.operationState.syncResult.revision}}
         body: |
           {
-            "key": "argocd-{{.app.metadata.name}}",
-            "state": "FAILED",
-            "name": "Argo CD Sync",
-            "url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
+            "state": "failed",
+            "name": "argocd/{{.app.metadata.name}}",
+            "target_url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
             "description": "Sync failed"
           }
 

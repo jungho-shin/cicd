@@ -7,7 +7,7 @@
 #   mkdir -p /data/gitlab/config /data/gitlab/data
 #
 # GitLab omnibus 컨테이너는 root 로 동작하고 내부 프로세스 UID(git=998 등)를
-# 스스로 맞춘다. bitbucket/jenkins/nexus 와 달리 chown 이 필요 없다.
+# 스스로 맞춘다. jenkins/nexus 와 달리 chown 이 필요 없다.
 #
 # 용량 주의: /var/opt/gitlab 아래에 git 리포지토리 + PostgreSQL + Redis +
 # 아티팩트가 모두 들어간다. 100Gi 는 넉넉한 편이 아니다.

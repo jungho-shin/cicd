@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# GitLab 리포지토리 자격증명
+# 실제 값은 절대 git 에 커밋하지 말 것. SealedSecrets / External Secrets /
+# `kubectl create secret` 중 하나로 주입한다. (README 참고)
+#
+# Argo CD 는 읽기만 하면 되므로 Deploy token(read_repository) 이면 충분하다.
+#   프로젝트 Settings > Repository > Deploy tokens
+# 쓰기가 필요한 쪽(CI 의 gitops 커밋, Image Updater write-back)은
+# Project/Group access token 을 따로 발급한다.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-gitlab-https
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+type: Opaque
+stringData:
+  type: git
+  name: gitlab-gitops
+  # 자체 호스팅 GitLab 은 클러스터 내부 주소를 쓴다. 외부 호스트명
+  # (gitlab.example.com)은 Argo CD Pod 에서 DNS 로 풀리지 않는다.
+  url: http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+  username: __REPLACE_ME__      # deploy token username
+  password: __REPLACE_ME__      # deploy token (read_repository)
+---
+# 같은 그룹의 모든 리포지토리에 공통 자격증명을 적용하려면 credential template 사용
+apiVersion: v1
+kind: Secret
+metadata:
+  name: repo-creds-gitlab-group
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repo-creds
+type: Opaque
+stringData:
+  type: git
+  url: http://gitlab.gitlab.svc.cluster.local/my-group
+  username: __REPLACE_ME__
+  password: __REPLACE_ME__
+---
+# SSH 방식을 쓰는 경우 (위 HTTP 대신 선택)
+# gitlab 서비스는 http(80)와 함께 ssh(22)도 열려 있으므로 클러스터 내부에서는
+# 포트 변환 없이 그대로 쓴다. (외부에서 쓸 때만 NodePort 30022)
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: repo-gitlab-ssh
+#   namespace: argocd
+#   labels:
+#     argocd.argoproj.io/secret-type: repository
+# type: Opaque
+# stringData:
+#   type: git
+#   url: ssh://git@gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+#   sshPrivateKey: |
+#     -----BEGIN OPENSSH PRIVATE KEY-----
+#     __REPLACE_ME__
+#     -----END OPENSSH PRIVATE KEY-----

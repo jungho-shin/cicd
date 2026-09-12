@@ -1,0 +1,119 @@
+# ===========================================================================
+# 애플리케이션 리포지토리(gitlab.example.com/my-group/sample-app)의 루트에
+# `.gitlab-ci.yml` 이름으로 배치한다.
+#
+# 흐름: 빌드/테스트 → 이미지 빌드&푸시(kaniko) → gitops 리포지토리 태그 갱신 커밋
+#       → Argo CD 가 감지하여 배포
+#
+# CI/CD Variables (Settings > CI/CD > Variables, 모두 Masked 권장):
+#   DOCKER_REGISTRY      my-registry.example.com   (Nexus 면 nexus-docker.example.com)
+#   DOCKER_USER          레지스트리 사용자
+#   DOCKER_PASSWORD      레지스트리 비밀번호
+#   GITOPS_REPO          gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+#   GITOPS_USER          project access token 의 이름
+#   GITOPS_TOKEN         Project/Group access token (write_repository)
+#   ARGOCD_SERVER        grpc.argocd.example.com
+#   ARGOCD_AUTH_TOKEN    `argocd account generate-token --account cicd`
+#
+# 러너는 bootstrap/gitlab/runner.yaml (kubernetes executor) 를 전제로 한다.
+# ===========================================================================
+stages: [test, build, deploy, verify]
+
+variables:
+  IMAGE: ${DOCKER_REGISTRY}/my-group/sample-app
+  IMAGE_TAG: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
+
+build-test:
+  stage: test
+  image: gradle:8-jdk21
+  script:
+    - ./gradlew clean build          # 또는 npm ci && npm test
+  artifacts:
+    paths:
+      - build/libs/
+    expire_in: 1 day
+
+docker-build-push:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - AUTH=$(printf "%s:%s" "$DOCKER_USER" "$DOCKER_PASSWORD" | base64 | tr -d '\n')
+    - printf '{"auths":{"%s":{"auth":"%s"}}}' "$DOCKER_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+    # --insecure / --skip-tls-verify 는 레지스트리를 평문 HTTP 로 쓸 때만 필요하다.
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile Dockerfile
+        --destination "${IMAGE}:${IMAGE_TAG}"
+        --destination "${IMAGE}:${CI_COMMIT_SHA}"
+        --insecure --skip-tls-verify
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG =~ /^v/
+
+# gitops 리포지토리의 overlay 이미지 태그를 갱신한다.
+.update-gitops:
+  stage: deploy
+  image: line/kubectl-kustomize:latest
+  script:
+    - git config --global user.email "ci@example.com"
+    - git config --global user.name "gitlab-ci"
+    - git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
+    - cd gitops/manifests/sample-app/overlays/${DEPLOY_ENV}
+    - kustomize edit set image "my-registry.example.com/my-group/sample-app=${IMAGE}:${IMAGE_TAG}"
+    - cd $CI_PROJECT_DIR/gitops
+    - git add -A
+    # 변경이 없으면 빈 커밋을 만들지 않고 그대로 끝낸다.
+    - git diff --cached --quiet && exit 0
+    # [skip ci] 로 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
+    - git commit -m "chore(${DEPLOY_ENV}): sample-app -> ${IMAGE_TAG} [skip ci]"
+    - git push origin HEAD:main
+
+# webhook 이 걸려 있으면 sync 는 자동으로 일어난다.
+# 파이프라인이 배포 완료까지 기다리게 하려면 이 잡을 유지한다.
+.argocd-wait:
+  stage: verify
+  image: argoproj/argocd:v3.0.6
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - export ARGOCD_OPTS="--grpc-web --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
+    - argocd app sync "sample-app-${DEPLOY_ENV}" $ARGOCD_OPTS
+    - argocd app wait "sample-app-${DEPLOY_ENV}" --health --timeout 600 $ARGOCD_OPTS
+
+deploy-dev:
+  extends: .update-gitops
+  variables:
+    DEPLOY_ENV: dev
+  environment:
+    name: dev
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+wait-dev:
+  extends: .argocd-wait
+  needs: [deploy-dev]
+  variables:
+    DEPLOY_ENV: dev
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+
+# 운영은 수동 승인 후 배포한다.
+deploy-prod:
+  extends: .update-gitops
+  variables:
+    DEPLOY_ENV: prod
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+  allow_failure: false
+
+wait-prod:
+  extends: .argocd-wait
+  needs: [deploy-prod]
+  variables:
+    DEPLOY_ENV: prod
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

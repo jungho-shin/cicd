@@ -24,10 +24,10 @@ data:
     p, role:dev, applications, action/*, dev/*, allow
     p, role:dev, logs, get, dev/*, allow
 
-    # CI(Bitbucket Pipelines) 전용 계정: 동기화 트리거만 허용
+    # CI(GitLab CI) 전용 계정: 동기화 트리거만 허용
     p, role:ci, applications, get, */*, allow
     p, role:ci, applications, sync, */*, allow
 
     g, cicd, role:ci
-    g, my-workspace:platform, role:platform-admin
-    g, my-workspace:developers, role:dev
+    g, my-group:platform, role:platform-admin
+    g, my-group:developers, role:dev

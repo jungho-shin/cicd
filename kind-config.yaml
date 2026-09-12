@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------------------
+# GitLab + Jenkins + Nexus + Argo CD 용 kind 클러스터 설정.
+#
+#   sudo mkdir -p /data && sudo chown "$USER" /data     # 최초 1회
+#   kind create cluster --name devops --config kind-config.yaml
+#
+# 전제: Windows 의 WSL2(Ubuntu) 안에서 네이티브 docker 로 kind 를 돌린다.
+# WSL2 는 localhost 포워딩이 기본이라 WSL 안에서 publish 한 포트가 Windows 의
+# 127.0.0.1 로 그대로 올라온다. 따라서 Windows hosts 파일은 VM IP 가 아니라
+#   127.0.0.1  gitlab.example.com ...
+# 로 적는다. 자세한 절차는 README 「부록: kind 로 로컬 클러스터 구성하기」 참고.
+#
+# 이 구성의 핵심 세 가지
+#   1. control-plane 에만 80/443 을 매핑하고 ingress-ready 라벨을 붙인다.
+#      ingress-nginx 컨트롤러를 이 노드에 고정해야 Windows 쪽에서 접속된다.
+#   2. 모든 노드에 WSL 의 /data 를 extraMounts 로 넣는다. 안 하면 hostPath PV
+#      (GitLab 리포지토리, Jenkins 잡, Nexus blob)가 노드 컨테이너 안에만
+#      생겨 kind delete cluster 와 함께 사라진다.
+#      /data 는 반드시 WSL 의 ext4(/) 아래여야 한다. /mnt/c 는 DrvFs 라
+#      chown/파일 모드가 먹지 않아 Nexus(UID 200), Jenkins(UID 1000) 가 죽는다.
+#   3. Nexus Docker 레지스트리(평문 HTTP)를 containerd 에 미리 등록한다.
+#      docker exec 로 넣은 설정은 클러스터를 다시 만들면 사라지지만
+#      여기에 적어두면 재생성해도 유지된다.
+#
+# 리소스: GitLab omnibus 하나가 2~4Gi 를 쓴다. Jenkins/Nexus/Argo CD 까지
+# 같이 올리려면 WSL 에 최소 8Gi(권장 16Gi) 가 필요하다. WSL2 는 기본으로
+# Windows RAM 의 절반을 쓰므로 보통 그대로 두면 되고, 모자라면 Windows 의
+# %USERPROFILE%\.wslconfig 에 [wsl2] memory=16GB 를 넣고 wsl --shutdown 한다.
+# ---------------------------------------------------------------------------
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: devops
+
+networking:
+  # 기본값은 127.0.0.1 + 랜덤 포트다. 포트를 고정해 두면 kubeconfig 가 매번
+  # 바뀌지 않고, localhost 포워딩 덕에 Windows 쪽 kubectl 에서도 같은 주소
+  # (https://127.0.0.1:6443)로 붙는다.
+  apiServerAddress: "127.0.0.1"
+  apiServerPort: 6443
+
+# ---------------------------------------------------------------------------
+# Nexus Docker 레지스트리를 containerd 의 미러로 등록한다.
+# 이미지 참조는 그대로 nexus-docker.example.com/foo:1.0 을 쓰되, 실제 통신은
+# 노드 로컬의 NodePort 로 나간다. 노드 안에서 DNS 로 호스트명을 풀 필요가 없고
+# HTTP endpoint 이므로 insecure-registries 설정도 따로 필요 없다.
+#
+# 전제: bootstrap/nexus/kustomization.yaml 에서 nodeport.yaml 주석을 푼다.
+#       (30082 = docker-hosted, 30083 = docker-group)
+# 레지스트리를 Ingress(nexus-docker.example.com)로만 쓸 거면 이 블록은 지운다.
+# ---------------------------------------------------------------------------
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."nexus-docker.example.com"]
+      endpoint = ["http://localhost:30082"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."nexus-docker-group.example.com"]
+      endpoint = ["http://localhost:30083"]
+  # Docker Hub 까지 Nexus 프록시로 돌리려면 아래 주석을 푼다. 단 클러스터를
+  # 막 만든 직후에는 Nexus 가 아직 없어 첫 pull 이 한 번 실패했다가
+  # 뒤쪽 endpoint 로 넘어간다(느려질 뿐 실패하지는 않는다).
+  # - |-
+  #   [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+  #     endpoint = ["http://localhost:30083", "https://registry-1.docker.io"]
+
+nodes:
+  # -------------------------------------------------------------------------
+  # control-plane: Ingress 전용 입구 역할을 겸한다.
+  # -------------------------------------------------------------------------
+  - role: control-plane
+    # ingress-nginx(kind 판)를 이 노드에 고정할 때 쓰는 라벨.
+    #   kubectl -n ingress-nginx patch deploy ingress-nginx-controller --type=merge \
+    #     -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux","ingress-ready":"true"}}}}}'
+    # kubeadmConfigPatches 의 kubeletExtraArgs 는 k8s 1.31+(v1beta4)에서 형식이
+    # 바뀌어 조용히 무시될 수 있다. 아래 labels 필드가 그 영향을 받지 않는다.
+    labels:
+      ingress-ready: "true"
+    extraPortMappings:
+      # ingress-nginx hostPort. 모든 웹 UI(gitlab/jenkins/nexus/argocd)가 여기로 들어온다.
+      # WSL 안에서 열리면 Windows 의 127.0.0.1:80 에서도 그대로 보인다.
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
+      # --- 아래는 HTTP 로 뚫을 수 없는 것들만 NodePort 로 내보낸다. ---
+      # NodePort 는 kind 노드 컨테이너 안에서만 열리므로, 이렇게 명시적으로
+      # 매핑한 포트만 WSL/Windows 네트워크로 올라온다. 매핑은 서비스가 없어도 무해하다.
+      #
+      # git+ssh (bootstrap/gitlab/nodeport.yaml, gitlab_shell_ssh_port=30022)
+      #   git clone ssh://git@localhost:30022/group/repo.git
+      - containerPort: 30022
+        hostPort: 30022
+        protocol: TCP
+      # Nexus Docker 레지스트리 (bootstrap/nexus/nodeport.yaml)
+      # Windows/WSL 에서 docker login/push 할 때 localhost:30082 로 쓴다.
+      # localhost 는 Docker 가 기본으로 insecure 취급하므로 데몬 설정이 필요 없다.
+      - containerPort: 30082
+        hostPort: 30082
+        protocol: TCP
+      - containerPort: 30083
+        hostPort: 30083
+        protocol: TCP
+    extraMounts:
+      - hostPath: /data
+        containerPath: /data
+
+  # -------------------------------------------------------------------------
+  # worker: GitLab/Jenkins/Nexus/Argo CD 워크로드와 Jenkins 빌드 에이전트가 뜬다.
+  # hostPath PV 가 어느 worker 에 붙어도 같은 /data 를 보도록 동일하게 마운트한다.
+  # -------------------------------------------------------------------------
+  - role: worker
+    extraMounts:
+      - hostPath: /data
+        containerPath: /data
+  - role: worker
+    extraMounts:
+      - hostPath: /data
+        containerPath: /data

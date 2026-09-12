@@ -19,8 +19,8 @@ stringData:
   JENKINS_ADMIN_PASSWORD: 'admin123'
 
   # gitops 리포지토리에 이미지 태그를 커밋할 계정
-  #   Bitbucket Cloud → App Password (Repositories: Write)
-  #   Bitbucket DC    → HTTP access token
+  #   GitLab → Project/Group access token (write_repository)
+  #   USER 에는 토큰 이름을, TOKEN 에는 토큰 값을 넣는다.
   GITOPS_USER: 'taos9938@gmail.com'
   GITOPS_TOKEN: '__REPLACE_ME__'
 
@@ -41,7 +41,7 @@ data:
     workflow-aggregator
     pipeline-stage-view
     git
-    cloudbees-bitbucket-branch-source
+    gitlab-branch-source
     credentials-binding
     pipeline-utility-steps
     job-dsl
@@ -137,7 +137,7 @@ data:
     #         branchSources {
     #           git {
     #             id('sample-app')
-    #             remote('http://bitbucket.bitbucket.svc.cluster.local:7990/scm/PROJ/sample-app.git')
+    #             remote('http://gitlab.gitlab.svc.cluster.local/my-group/sample-app.git')
     #             credentialsId('gitops-repo')
     #           }
     #         }

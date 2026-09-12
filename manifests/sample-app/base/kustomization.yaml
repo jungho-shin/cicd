@@ -13,5 +13,5 @@ labels:
       app.kubernetes.io/managed-by: argocd
 
 images:
-  - name: my-registry.example.com/my-workspace/sample-app
+  - name: my-registry.example.com/my-group/sample-app
     newTag: latest
