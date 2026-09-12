@@ -1,10 +1,14 @@
-# Ingress 나 DNS 가 아직 없을 때 노드 IP 로 바로 접속하기 위한 NodePort.
-# 사용하려면 kustomization.yaml 의 resources 에서 주석을 해제한다.
+# git+ssh 용 NodePort. 사용하려면 kustomization.yaml 의 resources 에서 주석을 해제한다.
 #
-#   UI/HTTP   http://<노드IP>:30080
-#   git+ssh   ssh://git@<노드IP>:30022
+#   git+ssh   ssh://git@localhost:30022        (kind: kind-config.yaml 이 매핑)
+#   UI/HTTP   http://<노드IP>:30080            (일반 클러스터에서만)
 #
-# NodePort 로 접속한다면 gitlab.yaml 의 external_url 도
+# kind 에서는 노드가 컨테이너라 kind-config.yaml 의 extraPortMappings 에 있는
+# 포트만 WSL/Windows 로 올라온다. 30022 는 매핑돼 있고 30080 은 없다. 따라서
+# kind 에서 이 파일의 용도는 git+ssh 뿐이고, UI 는 Ingress(gitlab.example.com)로
+# 접속한다. gitlab.yaml 의 external_url 도 'http://gitlab.example.com' 을 유지한다.
+#
+# 일반 클러스터(호스트가 곧 노드)에서 30080 으로 UI 에 붙을 때는 external_url 을
 # 'http://<노드IP>:30080' 으로 바꿔야 clone 주소와 리디렉션이 맞는다.
 apiVersion: v1
 kind: Service

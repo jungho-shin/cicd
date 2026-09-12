@@ -18,6 +18,12 @@ stringData:
   #   Could not create the default administrator account:
   #   --> Password must not contain commonly used combinations of words and letters
   # 실제로 '11111111' 과 'admin123' 둘 다 거부됐다. 사전에 없는 조합을 쓴다.
+  #
+  # 한 번 이렇게 실패했다면 비밀번호를 고쳐 파드를 살려도 root 계정은 생기지 않는다.
+  # DB 마이그레이션이 이미 끝나 있어 시드가 다시 돌지 않기 때문이다. 파드는 Ready 인데
+  # 로그인만 'Invalid login or password' 로 막힌다. 복구는 시드 재실행:
+  #   kubectl -n gitlab exec sts/gitlab -- gitlab-rake db:seed_fu
+  # 자세한 내용은 README 2.2.
   GITLAB_ROOT_PASSWORD: 'Kx7Qm2Vt9Zpr'
 ---
 apiVersion: v1

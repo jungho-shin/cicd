@@ -410,12 +410,28 @@ kubectl -n gitlab get pods -w
 kubectl -n gitlab logs -f sts/gitlab
 ```
 
-접속은 Ingress(`gitlab.example.com`) 또는 NodePort(`kustomization.yaml` 에서
-`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30080`).
+접속은 Ingress(`http://gitlab.example.com`)로 한다. Windows hosts 파일에
+`127.0.0.1 gitlab.example.com` 이 있어야 브라우저에서 열린다(1.7 참고).
 
-> NodePort 로 접속한다면 `gitlab.yaml` 의 `external_url` 도
-> `'http://<노드IP>:30080'` 으로 바꾼다. GitLab 은 이 값으로 clone 주소와
-> 리디렉션을 만들기 때문에, 실제 접속 주소와 다르면 로그인 후 튕긴다.
+```bash
+# Ingress 까지 붙었는지 확인. 302 가 정상이다 (미로그인 → /users/sign_in)
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: gitlab.example.com' http://localhost/
+```
+
+> **kind 에서는 NodePort(`http://<노드IP>:30080`)로 접속할 수 없다.** 노드가
+> 컨테이너라 `kind-config.yaml` 에 매핑한 포트(80/443/30022/30082/30083)만
+> WSL/Windows 로 올라온다. `nodeport.yaml` 을 주석 해제해도 30080 은 노드
+> 컨테이너 안에서만 열린다. GitLab UI 는 Ingress 전용이고, `nodeport.yaml` 은
+> git+ssh(30022)가 필요할 때만 쓴다(2.3).
+>
+> 따라서 `gitlab.yaml` 의 `external_url` 은 `'http://gitlab.example.com'` 을
+> **그대로 유지한다.** GitLab 은 이 값으로 clone 주소와 리디렉션을 만들기 때문에
+> 실제 접속 주소와 다르면 로그인 후 튕긴다. 이 이름은 클러스터 안에서도 CoreDNS
+> rewrite(1.6)로 같은 Ingress 컨트롤러를 가리키므로, webhook payload 의 리포지토리
+> URL 과 Argo CD Application 의 `repoURL` 도 자연히 일치한다.
+>
+> 일반 클러스터(호스트가 곧 노드)라면 NodePort 접속이 가능하고, 그때는
+> `external_url` 도 `'http://<노드IP>:30080'` 으로 바꿔야 한다.
 
 초기 계정은 `root` / `GITLAB_ROOT_PASSWORD` 값. 이 값은 **최초 기동(DB 시딩) 때만**
 반영되고 이후에는 무시된다.
@@ -441,13 +457,45 @@ kubectl -n gitlab logs -f sts/gitlab
 > kubectl -n gitlab delete pod gitlab-0
 > ```
 >
-> 그래도 admin 계정이 안 만들어지면 DB 가 어중간하게 시딩된 것이다. 아래로 초기화한다.
+> **주의: 비밀번호를 고쳐 파드가 살아나도 root 계정은 생기지 않는다.** 첫 기동에서
+> 시드가 실패하는 동안 DB 스키마 마이그레이션은 이미 끝나 있다. 그래서 새 비밀번호로
+> 재기동하면 `reconfigure` 는 성공하고 파드는 Ready 가 되며 Ingress 도 302 를
+> 돌려주는데, 시드는 "초기 설치"가 아니므로 다시 돌지 않는다 — root 계정이 없는
+> 상태 그대로다. 로그인하면 `Invalid login or password` 만 나오고, 비밀번호를 또
+> 바꿔 봐도 `initial_root_password` 는 계정 생성 시점에만 쓰이므로 달라지지 않는다.
+>
+> 먼저 계정 유무를 확인한다.
+>
+> ```bash
+> kubectl -n gitlab exec sts/gitlab -- gitlab-rails runner 'u = User.find_by(username: "root"); puts u ? "root EXISTS id=#{u.id} state=#{u.state}" : "root MISSING"'
+> ```
+>
+> `root MISSING` 이면 실패했던 시드를 다시 돌린다. 비밀번호는 컨테이너의
+> `GITLAB_ROOT_PASSWORD` 를 그대로 읽으므로 따로 넘기지 않는다. 파드가 새 값을
+> 들고 있는지만 먼저 확인한다.
+>
+> ```bash
+> kubectl -n gitlab exec sts/gitlab -- printenv GITLAB_ROOT_PASSWORD   # 새 값이어야 한다
+> kubectl -n gitlab exec sts/gitlab -- gitlab-rake db:seed_fu
+> ```
+>
+> `root EXISTS` 인데 로그인만 안 되는 경우라면 비밀번호만 재설정하면 된다
+> (아래 「나중에 바꾸려면」과 같은 명령이다).
+>
+> `User.new` + `save!` 로 직접 만들려 하면 GitLab 16 이후 개인 namespace 가
+> 필수라 `Namespace can't be blank` 로 실패한다. 시드를 쓰는 이유다.
+>
+> 시드로도 안 되면 DB 가 어중간하게 시딩된 것이다. 아래로 초기화한다(재기동에
+> 다시 8~15분 걸린다).
 >
 > ```bash
 > kubectl -n gitlab delete sts gitlab
 > sudo rm -rf /data/gitlab/config/* /data/gitlab/data/*
 > kubectl kustomize bootstrap/gitlab | kubectl apply -f -
 > ```
+>
+> 로그인 ID 는 `root` 다(이메일이 아니다). 실패가 10회 누적되면 계정이 10분간
+> 잠기는데 이때도 메시지가 같으므로, 비밀번호를 고친 직후에 안 되면 10분 뒤 다시 시도한다.
 
 나중에 바꾸려면:
 
@@ -463,12 +511,19 @@ kubectl -n gitlab exec sts/gitlab -- cat /etc/gitlab/initial_root_password
 
 ### 2.3 git+ssh
 
-NodePort 30022 로 노출되고, `gitlab_shell_ssh_port = 30022` 가 clone 주소에 반영된다.
+git+ssh 는 HTTP 로 뚫을 수 없어 NodePort 를 쓴다. `bootstrap/gitlab/kustomization.yaml`
+의 `nodeport.yaml` 주석을 해제해야 30022 가 열리고, `gitlab_shell_ssh_port = 30022`
+가 clone 주소에 반영된다. kind 에서는 `kind-config.yaml` 이 30022 를 매핑해 두었으므로
+WSL/Windows 에서 `localhost` 로 붙는다.
 
 ```bash
+kubectl kustomize bootstrap/gitlab | kubectl apply -f -   # nodeport.yaml 주석 해제 후
+
 # Profile > SSH Keys 에 공개키 등록 후
-git clone ssh://git@<노드IP>:30022/my-group/gitops-manifests.git
+git clone ssh://git@localhost:30022/my-group/gitops-manifests.git
 ```
+
+> 일반 클러스터라면 `localhost` 대신 `<노드IP>` 를 쓴다.
 
 HTTPS(평문 HTTP) clone 만 쓴다면 `nodeport.yaml` 의 ssh 포트와
 `gitlab_shell_ssh_port` 설정은 지워도 된다.
@@ -837,8 +892,12 @@ kubectl -n jenkins logs -f sts/jenkins -c install-plugins
 kubectl -n jenkins get pods -w
 ```
 
-접속은 Ingress(`jenkins.example.com`) 또는 NodePort(`kustomization.yaml` 에서
-`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30808`).
+접속은 Ingress(`http://jenkins.example.com`)로 한다.
+
+> **kind 에서는 NodePort(`http://<노드IP>:30808`)로 접속할 수 없다.**
+> `kind-config.yaml` 에 30808 매핑이 없어 노드 컨테이너 안에서만 열린다.
+> `nodeport.yaml` 은 주석 처리된 상태가 기본값이고, 그대로 둔다. 일반
+> 클러스터(호스트가 곧 노드)에서만 주석을 해제해 노드 IP 로 접속한다.
 
 ### 파이프라인 구성
 
