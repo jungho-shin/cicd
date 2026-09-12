@@ -282,12 +282,34 @@ WSL 안의 `/etc/hosts` 는 기본적으로 Windows hosts 파일에서 자동 �
   (`tar czf backup.tar.gz -C / data`). `extraMounts` 가 없는 노드에서는 `/data`
   가 노드 컨테이너 안의 경로일 뿐이고 `kind delete cluster` 와 함께 사라진다.
 - **WSL 을 종료하면 노드 컨테이너도 멈춘다.** kind 노드의 재시작 정책은
-  `on-failure` 라 `wsl --shutdown` 이후에는 자동으로 뜨지 않는다. 다시 켤 때는
-  docker 가 올라온 뒤 한 번 시작해 준다.
+  `on-failure:1`(실패 시 1회 재시도)이라 `wsl --shutdown` 이나 docker 재기동
+  이후에는 자동으로 뜨지 않는다. 다시 켤 때는 docker 가 올라온 뒤 한 번 시작해 준다.
 
   ```bash
+  # 먼저 상태 확인 — 일부만 Exited 인 경우가 흔하다
+  docker ps -a --filter label=io.x-k8s.kind.cluster=devops --format 'table {{.Names}}	{{.Status}}'
+
   docker start $(docker ps -aq --filter label=io.x-k8s.kind.cluster=devops)
   kubectl get nodes            # 전부 Ready 가 될 때까지 1~2분
+  ```
+
+  세 노드가 한꺼번에 죽는다는 보장이 없다. control-plane 만 `Exited (128)` 이고
+  워커는 살아 있는 경우가 있는데, 이때 `kubectl` 은 API 서버에 못 붙고
+  Ingress 는 연결 자체가 끊긴다(`curl` 이 404 가 아니라 `Failed to connect`).
+  노드가 전부 Ready 가 된 뒤에도 ingress-nginx 컨트롤러가 잠시 `0/1 Running` 인데,
+  readiness 프로브를 통과할 때까지 기다린다.
+
+  ```bash
+  kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s
+  curl -sS -o /dev/null -w '%{http_code}
+' http://localhost/   # 404 면 복구 완료
+  ```
+
+  매번 켜기가 번거로우면 재시작 정책을 바꿔둘 수 있다. 대신 클러스터를 멈춰두려면
+  `docker stop` 을 명시적으로 해야 한다.
+
+  ```bash
+  docker update --restart=unless-stopped $(docker ps -aq --filter label=io.x-k8s.kind.cluster=devops)
   ```
 
 ## 2. GitLab CE 설치
