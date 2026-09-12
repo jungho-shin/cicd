@@ -15,6 +15,6 @@ resources:
   #     WSL/Windows 에서 docker login/push 할 때도 localhost:30082 를 쓴다.
   #   30081 UI
   #     kind-config.yaml 에 포트 매핑이 없어 클러스터 밖에서는 접속되지 않는다.
-  #     UI 는 Ingress(nexus.example.com)로 접속한다. README 1.6 참고.
+  #     UI 는 Ingress(nexus.example.com)로 접속한다. README 1.7 참고.
   # 일반 클러스터(호스트가 곧 노드)라면 http://<노드IP>:30081 로 UI 에 바로 붙는다.
   - nodeport.yaml

@@ -247,7 +247,52 @@ WSL 안의 `/etc/hosts` 는 기본적으로 Windows hosts 파일에서 자동 �
 내용을 직접 넣는다. Windows 에서는 등록 후 `ipconfig /flushdns` 를 실행하고,
 크롬은 자체 DNS 캐시가 있어 재시작이 필요할 수 있다.
 
-### 1.6 kind 사용 시 주의
+### 1.6 CoreDNS 에 로컬 호스트명 등록
+
+**클러스터 밖과 안이 이름을 푸는 방식이 다르다.** Windows 의 hosts 파일은 브라우저와
+WSL 에만 유효하고, 파드는 CoreDNS 에게 묻는다. CoreDNS 는 `example.com` 을 모르므로
+클러스터 안에서 도는 것들이 전부 실패한다 — CI 의 kaniko push, Argo CD 의 `repoURL`,
+CI 잡의 `argocd` CLI, Image Updater.
+
+먼저 문제를 확인한다.
+
+```bash
+kubectl run dnstest --rm -it --image=busybox:1.36 --restart=Never   -- nslookup nexus-docker.example.com
+```
+
+`server can't find ...: NXDOMAIN` 이 나온다. hosts 파일에 등록했는데도 실패하는 것이
+정상이다.
+
+`bootstrap/coredns/coredns-cm.yaml` 이 `*.example.com` 을 ingress-nginx 컨트롤러로
+보내는 `rewrite` 를 넣은 Corefile 이다. nexus Service 로 직접 보내지 않는 이유는
+포트다. 이미지 참조에 포트가 없어 80 으로 붙는데 `nexus` Service 는 8081/8082/8083 만
+연다. 컨트롤러는 80 을 열고, `rewrite` 는 DNS 질의만 바꾸고 HTTP Host 헤더는
+건드리지 않으므로 기존 Ingress 의 host 라우팅이 그대로 살아난다.
+
+```bash
+kubectl apply -f bootstrap/coredns/coredns-cm.yaml
+kubectl -n kube-system rollout restart deploy/coredns
+kubectl -n kube-system rollout status  deploy/coredns
+```
+
+같은 명령으로 확인하면 이번엔 컨트롤러 Service 의 ClusterIP 가 나온다.
+
+```bash
+kubectl run dnstest --rm -it --image=busybox:1.36 --restart=Never   -- nslookup nexus-docker.example.com
+kubectl -n ingress-nginx get svc ingress-nginx-controller   # 위 IP 와 같아야 한다
+```
+
+- **ingress-nginx 설치(1.3) 후에 적용한다.** 컨트롤러 Service 가 없으면 rewrite
+  대상이 해석되지 않는다.
+- Corefile 은 ConfigMap 의 문자열 값이라 부분 병합이 안 되고 통째로 교체된다.
+  커밋된 파일은 kind v0.30.0 / k8s v1.34.0 의 원본을 기준으로 한다. 다른 버전으로
+  클러스터를 만들었다면 `kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}'`
+  로 원본을 확인하고 rewrite 블록만 옮겨 붙인다.
+- **이 패치는 `kind delete cluster` 와 함께 사라진다.** 클러스터를 다시 만들면
+  1.3 다음에 다시 적용한다.
+- 호스트를 추가하려면 그 이름의 Ingress 를 만들고 이 파일에 `rewrite` 한 줄을 더한다.
+
+### 1.7 kind 사용 시 주의
 
 - **`nodeport.yaml` 은 원칙적으로 쓰지 않는다.** kind 노드는 컨테이너라
   `kind-config.yaml` 에 매핑한 포트만 WSL/Windows 로 올라온다. 웹 UI 는 모두
@@ -463,7 +508,7 @@ kubectl -n nexus logs -f sts/nexus
 
 접속은 Ingress(`nexus.example.com`). kind 에서는 UI 의 NodePort(30081)에 포트
 매핑이 없어 클러스터 밖에서 열리지 않는다. `nodeport.yaml` 이 기본 활성인 것은
-UI 때문이 아니라 Docker 레지스트리(30082/30083) 때문이다(README 1.6 참고).
+UI 때문이 아니라 Docker 레지스트리(30082/30083) 때문이다(README 1.7 참고).
 일반 클러스터라면 `http://<노드IP>:30081` 로 UI 에 바로 붙는다.
 
 초기 계정은 `admin` / `admin123` (`NEXUS_SECURITY_RANDOMPASSWORD: "false"` 로 고정).

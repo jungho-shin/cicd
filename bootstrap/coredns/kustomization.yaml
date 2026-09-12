@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# kube-system 의 기존 coredns ConfigMap 을 통째로 교체한다.
+# 다른 bootstrap 디렉터리와 달리 네임스페이스를 새로 만들지 않는다.
+resources:
+  - coredns-cm.yaml
