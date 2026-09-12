@@ -72,6 +72,11 @@ nodes:
   # control-plane: Ingress 전용 입구 역할을 겸한다.
   # -------------------------------------------------------------------------
   - role: control-plane
+    # 노드 이미지 고정. 생략하면 kind 버전에 딸린 기본값이 쓰여, kind 를 올리면
+    # 클러스터 Kubernetes 버전이 조용히 바뀐다. 태그는 재발행될 수 있으므로
+    # digest 까지 붙인다(kind 공식 권장).
+    #   확인: docker inspect devops-worker --format '{{.Config.Image}}'
+    image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
     # ingress-nginx(kind 판)를 이 노드에 고정할 때 쓰는 라벨.
     #   kubectl -n ingress-nginx patch deploy ingress-nginx-controller --type=merge \
     #     -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux","ingress-ready":"true"}}}}}'
@@ -116,6 +121,11 @@ nodes:
   # 노드 이름(devops-worker)에 의존하지 않도록 이름 대신 라벨로 고정한다.
   # -------------------------------------------------------------------------
   - role: worker
+    # 노드 이미지 고정. 생략하면 kind 버전에 딸린 기본값이 쓰여, kind 를 올리면
+    # 클러스터 Kubernetes 버전이 조용히 바뀐다. 태그는 재발행될 수 있으므로
+    # digest 까지 붙인다(kind 공식 권장).
+    #   확인: docker inspect devops-worker --format '{{.Config.Image}}'
+    image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
     labels:
       storage-node: "true"
     extraMounts:
@@ -128,3 +138,8 @@ nodes:
   # 무의미해지고 위 헤더 2번의 동시 쓰기 문제가 되살아난다.
   # -------------------------------------------------------------------------
   - role: worker
+    # 노드 이미지 고정. 생략하면 kind 버전에 딸린 기본값이 쓰여, kind 를 올리면
+    # 클러스터 Kubernetes 버전이 조용히 바뀐다. 태그는 재발행될 수 있으므로
+    # digest 까지 붙인다(kind 공식 권장).
+    #   확인: docker inspect devops-worker --format '{{.Config.Image}}'
+    image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a

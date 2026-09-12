@@ -164,6 +164,9 @@ GitLab/Jenkins/Nexus/Argo CD 기준으로 다음이 들어 있다.
 - git+ssh(30022)와 Nexus Docker 레지스트리(30082/30083) 포트 매핑
 - API 서버를 `127.0.0.1:6443` 으로 고정 — 재생성해도 kubeconfig 주소가 그대로고,
   Windows 쪽 kubectl 에서도 같은 주소로 붙는다
+- 노드 이미지를 `kindest/node:v1.34.0@sha256:...` 로 고정 — 생략하면 kind 버전에
+  딸린 기본값이 쓰여, kind 를 업그레이드하면 클러스터 Kubernetes 버전이 조용히
+  바뀐다. 다른 버전으로 올리려면 이 값을 바꾼다
 - Nexus Docker 레지스트리를 containerd 미러로 등록(`containerdConfigPatches`).
   `docker exec` 로 넣은 설정과 달리 클러스터를 다시 만들어도 유지된다
 
