@@ -637,8 +637,61 @@ kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password; echo
 
 ### 3.4 TLS 없이 쓸 때 (로컬 클러스터)
 
-Docker/containerd 는 레지스트리에 HTTPS 로 접속한다. NodePort 나 평문 Ingress 를
-쓴다면 각 노드에 예외를 등록해야 이미지 pull/push 가 된다.
+Docker/containerd 는 레지스트리에 HTTPS 로 접속하므로, 평문 레지스트리는 접속하는
+주체마다 예외 등록이 필요하다. **주체가 셋인데 방식이 각각 다르다.**
+
+| 주체 | 무엇을 하나 | 주소 | 예외 등록 방법 |
+|---|---|---|---|
+| 노드의 containerd | 이미지 pull | `nexus-docker.example.com` | `kind-config.yaml` 의 `containerdConfigPatches` |
+| kaniko (CI 잡 Pod) | 이미지 push | `nexus-docker.example.com` | CoreDNS rewrite(1.6) + kaniko `--insecure` |
+| WSL/Windows 의 docker | 수동 login/push | `localhost:30082` | 없음 (Docker 가 localhost 를 기본 insecure 취급) |
+
+> **kind 에서는 아래 `daemon.json` · `certs.d` 절차를 따라 하지 않는다.** 노드가
+> 컨테이너라 적용할 대상이 없고, 컨테이너 안에서 고쳐도 `kind delete cluster` 와
+> 함께 사라진다. 위 표의 세 경로로 이미 전부 해결돼 있다.
+
+세 경로를 풀어 쓰면 이렇다.
+
+- **노드 pull.** `kind-config.yaml` 의 `containerdConfigPatches` 가
+  `nexus-docker.example.com` 을 노드 로컬 NodePort(`http://localhost:30082`)로
+  보낸다. DNS 를 타지 않으므로 CoreDNS 와 무관하고, 클러스터를 다시 만들어도
+  `kind-config.yaml` 에 들어 있으니 유지된다. `bootstrap/nexus/kustomization.yaml`
+  의 `nodeport.yaml` 이 기본 활성인 이유가 이것이다(1.7).
+- **kaniko push.** kaniko 는 containerd 를 거치지 않고 직접 레지스트리에 붙는다.
+  이름은 CoreDNS rewrite(1.6)가 ingress-nginx 컨트롤러로 보내고, 평문이라
+  `--insecure`(또는 `--insecure-registry`)가 필요하다. `ci/.gitlab-ci.yml` 에
+  이미 들어 있다.
+- **클러스터 밖 수동 push.** `localhost:30082` 를 쓴다. Docker 는 `localhost` 를
+  기본으로 insecure 취급하므로 데몬 설정이 필요 없다.
+
+```bash
+docker login localhost:30082 -u admin
+docker tag myapp:1.0 localhost:30082/myapp:1.0
+docker push localhost:30082/myapp:1.0
+```
+
+> 태그의 호스트 부분이 레지스트리 주소가 되므로, 같은 이미지를 클러스터에서 pull 할
+> 때 쓰는 `nexus-docker.example.com/myapp:1.0` 과 태그가 다르다. 매니페스트에는
+> `nexus-docker.example.com/...` 을 쓰고, 수동 push 한 이미지는
+> `docker tag localhost:30082/myapp:1.0 nexus-docker.example.com/myapp:1.0` 로
+> 다시 태그해 push 한다(같은 Nexus 이므로 레이어는 재전송되지 않는다).
+
+도달 확인:
+
+```bash
+# 클러스터 안에서 (CoreDNS + Ingress 경로)
+kubectl run curltest --rm -it --image=curlimages/curl --restart=Never -- curl -sS -o /dev/null -w '%{http_code}' http://nexus-docker.example.com/v2/
+
+# 노드의 containerd 경로 (미러 설정)
+docker exec devops-worker crictl pull nexus-docker.example.com/<repo>:<tag>
+```
+
+`/v2/` 는 인증이 걸려 있으면 `401` 을 돌려준다. `401` 이면 도달은 된 것이다.
+`000` 이나 connection refused 면 이름 해석 또는 Ingress 문제다.
+
+#### 일반 클러스터(호스트가 곧 노드)에서는
+
+노드가 실제 호스트이므로 런타임 설정을 직접 넣는다. kind 에는 해당하지 않는다.
 
 ```bash
 # docker 런타임
@@ -658,8 +711,10 @@ TOML
 systemctl restart containerd
 ```
 
-클러스터 내부에서만 쓴다면 `nexus.nexus.svc.cluster.local:8082` 를 그대로 쓸 수 있지만,
-이 주소도 평문이므로 위와 같은 예외 등록이 필요하다.
+클러스터 내부 전용 주소(`nexus.nexus.svc.cluster.local:8082`)를 쓸 수도 있지만,
+이 구성에서는 쓰지 않는다. 호스트명을 `*.example.com` 하나로 통일해 두면 나중에
+실제 레지스트리로 옮길 때 CoreDNS 항목만 빼면 되고, 클러스터 전용 주소를
+매니페스트에 박지 않아도 된다.
 
 ### 3.5 레지스트리 연동 (CI / 앱 네임스페이스)
 

@@ -29,9 +29,17 @@ spec:
 #   nexus-docker.example.com        → docker-hosted (8082), push/pull
 #   nexus-docker-group.example.com  → docker-group  (8083), pull 전용
 #
-# docker login/push 는 HTTPS 가 기본이다. TLS 가 없으면 각 노드의
-# /etc/docker/daemon.json 에 insecure-registries 를 넣거나,
-# containerd 라면 hosts.toml 에 skip_verify 를 설정해야 한다.
+# 평문(HTTP)이므로 접속하는 주체마다 예외가 필요하다. kind 에서는 셋 다 이미
+# 해결돼 있고, 노드에 daemon.json/hosts.toml 을 넣을 필요가 없다:
+#
+#   노드 containerd(pull)  kind-config.yaml 의 containerdConfigPatches
+#                          → nexus-docker.example.com 을 localhost:30082 로
+#   kaniko(push)           CoreDNS rewrite(bootstrap/coredns/) + kaniko --insecure
+#   WSL/Windows docker     localhost:30082 (Docker 가 localhost 를 insecure 취급)
+#
+# 일반 클러스터(호스트가 곧 노드)라면 각 노드의 /etc/docker/daemon.json 에
+# insecure-registries 를 넣거나 containerd hosts.toml 에 skip_verify 를 설정한다.
+# 자세한 내용은 README 3.4.
 # ---------------------------------------------------------------------------
 apiVersion: networking.k8s.io/v1
 kind: Ingress

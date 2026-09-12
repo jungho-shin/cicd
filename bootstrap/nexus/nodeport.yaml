@@ -1,9 +1,16 @@
-# Ingress 나 DNS 가 아직 없을 때 노드 IP 로 바로 접속하기 위한 NodePort.
-# 사용하려면 kustomization.yaml 의 resources 에서 주석을 해제한다.
+# Docker 레지스트리용 NodePort. kustomization.yaml 에서 **기본 활성**이다.
 #
-#   UI            http://<노드IP>:30081
-#   docker-hosted <노드IP>:30082   (push/pull)
-#   docker-group  <노드IP>:30083   (pull 전용)
+#   docker-hosted localhost:30082   (push/pull)   kind-config.yaml 이 매핑
+#   docker-group  localhost:30083   (pull 전용)   kind-config.yaml 이 매핑
+#   UI            <노드IP>:30081                  일반 클러스터에서만
+#
+# 30082/30083 이 필수인 이유: kind-config.yaml 의 containerdConfigPatches 가
+# 노드의 이미지 pull 을 http://localhost:30082 로 보낸다. 이 Service 가 없으면
+# 클러스터 안 pull 이 실패한다. WSL/Windows 에서 docker login/push 할 때도 같은
+# 주소를 쓴다.
+#
+# 30081(UI)은 kind-config.yaml 에 포트 매핑이 없어 클러스터 밖에서 열리지 않는다.
+# UI 는 Ingress(nexus.example.com)로 접속한다. README 1.7 / 3.2 참고.
 apiVersion: v1
 kind: Service
 metadata:
