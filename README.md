@@ -249,9 +249,8 @@ WSL 안의 `/etc/hosts` 는 기본적으로 Windows hosts 파일에서 자동 �
 
 ### 1.6 CoreDNS 에 로컬 호스트명 등록
 
-**클러스터 밖과 안이 이름을 푸는 방식이 다르다.** Windows 의 hosts 파일은 브라우저와
-WSL 에만 유효하고, 파드는 CoreDNS 에게 묻는다. CoreDNS 는 `example.com` 을 모르므로
-클러스터 안에서 도는 것들이 전부 실패한다 — CI 의 kaniko push, Argo CD 의 `repoURL`,
+**클러스터 밖과 안이 이름을 푸는 방식이 다르다.** 이걸 처리하지 않으면 클러스터
+안에서 도는 것들이 전부 깨진다 — CI 의 kaniko push, Argo CD 의 `repoURL`,
 CI 잡의 `argocd` CLI, Image Updater.
 
 먼저 문제를 확인한다.
@@ -260,8 +259,18 @@ CI 잡의 `argocd` CLI, Image Updater.
 kubectl run dnstest --rm -it --image=busybox:1.36 --restart=Never   -- nslookup nexus-docker.example.com
 ```
 
-`server can't find ...: NXDOMAIN` 이 나온다. hosts 파일에 등록했는데도 실패하는 것이
-정상이다.
+`Address: 127.0.0.1` 이 나온다. **이름이 안 풀리는 게 아니라 엉뚱하게 풀리는 것이
+문제다.** CoreDNS 는 `example.com` 을 모르니 `forward . /etc/resolv.conf` 로 넘기는데,
+이 사슬이 Windows hosts 파일까지 닿는다.
+
+```
+파드 → CoreDNS → 노드의 resolv.conf → Docker 내장 DNS(127.0.0.11)
+     → WSL 리졸버 → Windows DNS 프록시 → Windows hosts 파일 → 127.0.0.1
+```
+
+파드 안에서 `127.0.0.1` 은 그 파드 자신이다. kaniko 가 push 하면 자기 자신에게
+붙으려다 `connection refused` 로 죽는다. NXDOMAIN 이면 차라리 원인이 분명한데,
+이렇게 잘못된 주소가 돌아오면 진단이 훨씬 어렵다.
 
 `bootstrap/coredns/coredns-cm.yaml` 이 `*.example.com` 을 ingress-nginx 컨트롤러로
 보내는 `rewrite` 를 넣은 Corefile 이다. nexus Service 로 직접 보내지 않는 이유는

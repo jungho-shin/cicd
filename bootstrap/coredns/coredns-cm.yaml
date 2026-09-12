@@ -2,10 +2,13 @@
 # CoreDNS 에 *.example.com 을 ingress-nginx 컨트롤러로 보내는 rewrite 를 추가한다.
 #
 # 왜 필요한가
-#   Windows 의 hosts 파일은 클러스터 밖에서만 유효하다. 파드는 CoreDNS 에게 묻고,
-#   CoreDNS 는 example.com 을 모르므로 NXDOMAIN 이 난다. 그래서 클러스터 안에서
-#   도는 것들(kaniko push, Argo CD 의 repoURL, CI 의 argocd CLI, Image Updater)이
-#   전부 실패한다. 확인:
+#   CoreDNS 는 example.com 을 모르므로 forward . /etc/resolv.conf 로 넘기는데,
+#   그 사슬이 Windows hosts 파일까지 닿는다(노드 resolv.conf → Docker 내장 DNS
+#   → WSL 리졸버 → Windows DNS 프록시 → hosts). 결과는 127.0.0.1 이고,
+#   파드 안에서 그건 자기 자신이다. 이름이 안 풀리는 게 아니라 엉뚱하게 풀리기
+#   때문에 kaniko push 가 connection refused 로 죽고 원인 찾기가 어렵다.
+#   클러스터 안에서 도는 것들(kaniko push, Argo CD 의 repoURL, CI 의 argocd CLI,
+#   Image Updater)이 전부 이 영향을 받는다. 확인:
 #     kubectl run dnstest --rm -it --image=busybox:1.36 --restart=Never #       -- nslookup nexus-docker.example.com
 #
 # 왜 nexus Service 가 아니라 ingress-nginx 컨트롤러로 보내는가
