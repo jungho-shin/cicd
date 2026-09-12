@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# 단일 노드(VirtualBox 등) 클러스터용 hostPath PV.
+# hostPath PV. nodeAffinity 로 storage-node=true 워커 한 대에 고정한다.
+# 단일 노드 클러스터라면 nodeAffinity 블록을 지워도 된다.
 # 동적 프로비저너(StorageClass)가 이미 있다면 이 파일을 kustomization 에서 빼고
 # PVC 의 storageClassName: manual / volumeName 줄도 제거해 기본 StorageClass 를 쓴다.
 #
@@ -24,3 +25,14 @@ spec:
   hostPath:
     path: /data/nexus
     type: DirectoryOrCreate
+  # 스토리지 노드 고정. kind-config.yaml 에서 worker 한 대에만 storage-node=true
+  # 라벨과 /data extraMounts 를 줬다. 이 블록이 없으면 파드가 다른 워커에 떠도
+  # 스케줄러가 막지 않고, 롤아웃 중 두 파드가 같은 디렉터리를 동시에 쓴다.
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: storage-node
+              operator: In
+              values:
+                - "true"

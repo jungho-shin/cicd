@@ -152,8 +152,15 @@ memory=16GB
 GitLab/Jenkins/Nexus/Argo CD 기준으로 다음이 들어 있다.
 
 - control-plane 에 `ingress-ready=true` 라벨과 80/443 `extraPortMappings`
-- 모든 노드에 WSL 의 `/data` 를 `extraMounts` — 없으면 hostPath PV 가 노드
-  컨테이너 안에만 생겨 `kind delete cluster` 와 함께 사라진다
+- 노드 3대 (control-plane 1 + worker 2). worker 한 대에만 `storage-node=true`
+  라벨과 WSL 의 `/data` `extraMounts` 를 준다 — 이 노드가 스토리지 노드다
+- `bootstrap/*/local-pv.yaml` 의 모든 hostPath PV 가 `nodeAffinity` 로 그 노드에
+  고정된다. 세 노드 모두에 `/data` 를 마운트하면 같은 WSL 디렉터리를 공유하게 되어,
+  StatefulSet 롤아웃 중 구/신 파드가 서로 다른 워커에서 같은 디렉터리를 동시에
+  쓴다. GitLab(PostgreSQL+Gitaly)과 Nexus(내장 DB)는 이를 견디지 못하고,
+  hostPath 에서는 `ReadWriteOnce` 도 강제되지 않는다
+- `extraMounts` 자체가 없으면 hostPath PV 가 노드 컨테이너 안에만 생겨
+  `kind delete cluster` 와 함께 사라진다
 - git+ssh(30022)와 Nexus Docker 레지스트리(30082/30083) 포트 매핑
 - API 서버를 `127.0.0.1:6443` 으로 고정 — 재생성해도 kubeconfig 주소가 그대로고,
   Windows 쪽 kubectl 에서도 같은 주소로 붙는다
@@ -239,25 +246,38 @@ WSL 안의 `/etc/hosts` 는 기본적으로 Windows hosts 파일에서 자동 �
 
 ### 1.6 kind 사용 시 주의
 
-- **`nodeport.yaml` 은 기본적으로 적용하지 않는다.** 각 서비스의
-  `kustomization.yaml` 에서 주석 처리된 상태가 kind 기준 기본값이다. 예외는
-  git+ssh(gitlab)와 Docker 레지스트리(nexus) 로, `kind-config.yaml` 에 포트를
-  매핑해 뒀으므로 필요하면 해당 `nodeport.yaml` 만 주석을 푼다.
+- **`nodeport.yaml` 은 원칙적으로 쓰지 않는다.** kind 노드는 컨테이너라
+  `kind-config.yaml` 에 매핑한 포트만 WSL/Windows 로 올라온다. 웹 UI 는 모두
+  Ingress 로 접속하고, `jenkins` 의 `nodeport.yaml` 은 주석 처리된 상태가 기본값이다.
+  예외는 HTTP 로 뚫을 수 없는 둘이다.
+  - `nexus` — **기본 활성.** Docker 레지스트리(30082/30083)가 아래 containerd
+    미러의 엔드포인트라 꺼 두면 클러스터 안 이미지 pull 이 실패한다.
+  - `gitlab` — git+ssh(30022)를 쓸 때만 주석을 푼다.
 - **Docker 레지스트리는 두 가지 경로가 있다.** 사람이 쓰는 웹 UI 와 달리
   레지스트리는 평문 HTTP 라 노드 쪽 설정이 필요하다.
   - 클러스터 안(kubelet 의 이미지 pull): `kind-config.yaml` 의
     `containerdConfigPatches` 가 `nexus-docker.example.com` 을
     노드 로컬 NodePort(30082/30083)로 보낸다. `bootstrap/nexus/kustomization.yaml`
-    에서 `nodeport.yaml` 주석을 풀어야 동작한다. `docker exec` 로 넣던 설정과 달리
+    의 `nodeport.yaml` 이 그래서 기본 활성이다. `docker exec` 로 넣던 설정과 달리
     클러스터를 다시 만들어도 유지된다.
   - 클러스터 밖(WSL/Windows 의 `docker login/push`): `localhost:30082` 를 쓴다.
     Docker 는 `localhost` 를 기본으로 insecure 취급하므로 데몬 설정이 필요 없다.
     `nexus-docker.example.com`(Ingress)으로 쓰고 싶으면 데몬의
     `insecure-registries` 에 등록해야 한다(`3.4 TLS 없이 쓸 때` 참고).
-- **hostPath PV 는 `/data` 를 마운트했을 때만 WSL 디스크에 남는다.**
-  `extraMounts` 없이 만든 클러스터에서 `/data/jenkins` 는 WSL 이 아니라 노드
-  컨테이너의 경로이고, `kind delete cluster` 하면 같이 사라진다. 백업은
-  `docker exec <노드> tar czf - /data > backup.tar.gz` 로 받는다.
+- **hostPath PV 는 스토리지 노드에만 뜬다.** `storage-node=true` 라벨이 붙은
+  worker 한 대에만 WSL 의 `/data` 가 마운트돼 있고, `bootstrap/*/local-pv.yaml`
+  의 `nodeAffinity` 가 GitLab/Nexus/Jenkins 를 그 노드로 고정한다. 라벨이 붙은
+  노드가 없거나 둘 이상이면 파드가 Pending 으로 멈추거나 고정이 무의미해지므로,
+  `kind-config.yaml` 을 고칠 때 라벨이 정확히 한 대에만 있는지 확인한다.
+
+  ```bash
+  kubectl get nodes -l storage-node=true        # 정확히 1개여야 한다
+  kubectl get pv -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values
+  ```
+
+  마운트된 `/data` 는 WSL 의 실제 디렉터리이므로 백업은 WSL 에서 직접 받는다
+  (`tar czf backup.tar.gz -C / data`). `extraMounts` 가 없는 노드에서는 `/data`
+  가 노드 컨테이너 안의 경로일 뿐이고 `kind delete cluster` 와 함께 사라진다.
 - **WSL 을 종료하면 노드 컨테이너도 멈춘다.** kind 노드의 재시작 정책은
   `on-failure` 라 `wsl --shutdown` 이후에는 자동으로 뜨지 않는다. 다시 켤 때는
   docker 가 올라온 뒤 한 번 시작해 준다.
@@ -287,7 +307,8 @@ Gitaly·nginx 를 모두 띄우는 단일 Pod 구성이다. 공식 Helm 차트(`
   `prometheus_monitoring` 비활성화를 전제로 한 값이다. Argo CD 와 함께 올린다면
   노드 메모리 **16GB 이상**을 권장한다. 러너 잡 Pod 는 그 위에 추가로 뜬다.
 - **스토리지.** `/var/opt/gitlab` 에 git 리포지토리 + DB + 아티팩트가 모두 들어간다.
-  동적 프로비저너가 없으면 노드에 디렉터리를 미리 만든다:
+  동적 프로비저너가 없으면 디렉터리를 미리 만든다. kind 에서는 노드 컨테이너가
+  아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
 
 ```bash
 mkdir -p /data/gitlab/config /data/gitlab/data
@@ -397,11 +418,12 @@ Docker Hub / Maven Central / npmjs 프록시로 쓴다.
   Argo CD + GitLab + Jenkins 까지 같이 올린다면 노드 메모리 **16GB 이상**을 권장한다.
   더 줄이려면 `bootstrap/nexus/nexus.yaml` 의 `INSTALL4J_ADD_VM_PARAMS` 를 조정한다.
 - **스토리지.** 프록시 캐시가 쌓이므로 넉넉히 잡는다(기본 50Gi).
-  동적 프로비저너가 없으면 노드에 디렉터리를 미리 만든다:
+  동적 프로비저너가 없으면 디렉터리를 미리 만든다. kind 에서는 노드 컨테이너가
+  아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
 
 ```bash
 mkdir -p /data/nexus
-chown -R 200:200 /data/nexus     # nexus 컨테이너 UID
+sudo chown -R 200:200 /data/nexus     # nexus 컨테이너 UID
 ```
 
 ### 3.2 설치
@@ -414,8 +436,10 @@ kubectl -n nexus get pods -w
 kubectl -n nexus logs -f sts/nexus
 ```
 
-접속은 Ingress(`nexus.example.com`) 또는 NodePort(`kustomization.yaml` 에서
-`nodeport.yaml` 주석 해제 후 `http://<노드IP>:30081`).
+접속은 Ingress(`nexus.example.com`). kind 에서는 UI 의 NodePort(30081)에 포트
+매핑이 없어 클러스터 밖에서 열리지 않는다. `nodeport.yaml` 이 기본 활성인 것은
+UI 때문이 아니라 Docker 레지스트리(30082/30083) 때문이다(README 1.6 참고).
+일반 클러스터라면 `http://<노드IP>:30081` 로 UI 에 바로 붙는다.
 
 초기 계정은 `admin` / `admin123` (`NEXUS_SECURITY_RANDOMPASSWORD: "false"` 로 고정).
 로그인 후 **즉시 비밀번호를 바꾼다.** 임의 비밀번호(기본 동작)를 쓰려면 해당 env 를

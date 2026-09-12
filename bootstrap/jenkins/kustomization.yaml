@@ -11,5 +11,6 @@ resources:
   - jenkins.yaml
   - ingress.yaml
   # DNS/Ingress 없이 노드 IP 로 접속하려면 주석 해제 (http://<노드IP>:30808)
-  # kind 클러스터에서는 동작하지 않는다. 「부록: kind 로 로컬 클러스터 구성하기」참고
+  # kind 에서는 30808 포트 매핑이 없어 클러스터 밖에서 접속되지 않는다.
+  # UI 는 Ingress(jenkins.example.com)로 접속한다. README 1.6 참고.
   # - nodeport.yaml
