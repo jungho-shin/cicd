@@ -73,7 +73,8 @@ docker-build-push:
 # 파이프라인이 배포 완료까지 기다리게 하려면 이 잡을 유지한다.
 .argocd-wait:
   stage: verify
-  image: argoproj/argocd:v3.0.6
+  # 공식 이미지는 quay.io 에 배포된다. 서버(bootstrap/argocd/kustomization.yaml)와 같은 태그로 맞춘다.
+  image: quay.io/argoproj/argocd:v3.5.2
   variables:
     GIT_STRATEGY: none
   script:

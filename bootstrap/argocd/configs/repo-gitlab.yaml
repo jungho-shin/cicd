@@ -1,7 +1,8 @@
 # ---------------------------------------------------------------------------
 # GitLab 리포지토리 자격증명
 # 실제 값은 절대 git 에 커밋하지 말 것. SealedSecrets / External Secrets /
-# `kubectl create secret` 중 하나로 주입한다. (README 참고)
+# `kubectl create secret` 중 하나로 주입한다. (README 4.2)
+# 기본은 configs/kustomization.yaml 의 resources 에서 제외돼 있다(예시 보관용).
 #
 # Argo CD 는 읽기만 하면 되므로 Deploy token(read_repository) 이면 충분하다.
 #   프로젝트 Settings > Repository > Deploy tokens
@@ -19,9 +20,10 @@ type: Opaque
 stringData:
   type: git
   name: gitlab-gitops
-  # 자체 호스팅 GitLab 은 클러스터 내부 주소를 쓴다. 외부 호스트명
-  # (gitlab.example.com)은 Argo CD Pod 에서 DNS 로 풀리지 않는다.
-  url: http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+  # 클러스터 안에서도 gitlab.example.com 을 쓴다. CoreDNS rewrite(bootstrap/coredns/)가
+  # ingress-nginx 로 보내므로 Argo CD Pod 에서 풀린다. GitLab external_url 과 같아
+  # webhook payload 의 리포지토리 URL 과도 일치한다.
+  url: http://gitlab.example.com/my-group/gitops-manifests.git
   username: __REPLACE_ME__      # deploy token username
   password: __REPLACE_ME__      # deploy token (read_repository)
 ---
@@ -36,7 +38,7 @@ metadata:
 type: Opaque
 stringData:
   type: git
-  url: http://gitlab.gitlab.svc.cluster.local/my-group
+  url: http://gitlab.example.com/my-group
   username: __REPLACE_ME__
   password: __REPLACE_ME__
 ---

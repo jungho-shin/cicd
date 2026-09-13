@@ -820,18 +820,21 @@ kubectl -n argocd get pods
 # GitLab 리포지토리 자격증명 (Deploy token, read_repository)
 kubectl -n argocd create secret generic repo-gitlab-https \
   --from-literal=type=git \
-  --from-literal=url=http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git \
+  --from-literal=url=http://gitlab.example.com/my-group/gitops-manifests.git \
   --from-literal=username='<deploy-token-username>' \
   --from-literal=password='<deploy-token>'
 kubectl -n argocd label secret repo-gitlab-https argocd.argoproj.io/secret-type=repository
 
 # 레지스트리 pull secret (앱 네임스페이스마다 필요)
 kubectl -n sample-app-dev create secret docker-registry regcred \
-  --docker-server=my-registry.example.com \
+  --docker-server=nexus-docker.example.com \
   --docker-username='<user>' --docker-password='<password>'
 ```
 
-이 경우 `bootstrap/argocd/configs/repo-gitlab.yaml` 은 `kustomization.yaml` 의 resources 에서 제외한다.
+`bootstrap/argocd/configs/repo-gitlab.yaml` 은 `configs/kustomization.yaml` 의 resources 에서
+**기본 제외**돼 있다. placeholder 인 채로 적용하면 같은 이름의 시크릿이 먼저 생겨 위
+`create` 가 `AlreadyExists` 로 실패하고, 이후 `apply` 할 때마다 실제 값을 덮어쓴다.
+토큰이 아직 없어도(2.5) 4.1 설치는 먼저 진행해도 된다.
 
 **B. Sealed Secrets** — `kubeseal` 로 암호화한 `SealedSecret` 을 커밋.
 **C. External Secrets Operator** — Vault/AWS Secrets Manager 등에서 주입.
