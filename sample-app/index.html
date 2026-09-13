@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>sample-app</title>
+    <!--
+      런타임 설정. 빌드 결과는 정적 파일이라 환경변수를 읽을 수 없으므로,
+      컨테이너가 시작할 때 APP_ENV 로 /tmp/config.js 를 만들고 nginx 가 이 경로로 서빙한다.
+      (docker-entrypoint.sh, nginx.conf). 로컬 개발에서는 public/config.js 가 쓰인다.
+    -->
+    <script src="/config.js"></script>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 2rem 1rem; background: #f6f7f9; color: #1f2328; }
+      main { max-width: 32rem; margin: 0 auto; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: .5rem 1rem; }
+      dt { color: #59636e; }
+      dd { margin: 0; font-family: ui-monospace, monospace; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

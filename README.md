@@ -64,10 +64,17 @@ apps/
 
 manifests/sample-app/
   base/                       Deployment / Service / ServiceAccount
-  overlays/dev/               replicas 1, dev 호스트, dev-<sha> 태그
+  overlays/dev/               replicas 1, dev 호스트, develop-<sha> 태그
   overlays/prod/              replicas 3, HPA, PDB, 수동 배포
 
 ci/.gitlab-ci.yml             앱 리포지토리 루트에 복사해서 사용
+
+sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx 로 서빙) — 6장
+  src/                        App.jsx, main.jsx, App.test.jsx
+  public/config.js            로컬 개발용 런타임 설정 (컨테이너에서는 /tmp/config.js 로 대체)
+  Dockerfile                  node 빌드 → nginx-unprivileged, UID 10001
+  nginx.conf                  8080, /healthz, 읽기 전용 루트 대응(쓰기 경로는 /tmp)
+  docker-entrypoint.sh        APP_ENV 로 /tmp/config.js 생성 후 nginx 기동
 ```
 
 ## 설치 순서
@@ -624,7 +631,7 @@ Argo CD 와 CI 가 쓸 토큰을 이 단계에서 미리 발급해 둔다. GitLa
 | 용도 | 종류 | 발급 위치 | 스코프 |
 |---|---|---|---|
 | Argo CD 가 gitops 리포지토리를 읽기 | Deploy token | gitops 프로젝트 > Settings > Repository > Deploy tokens | `read_repository` |
-| CI 가 gitops 리포지토리에 커밋 | Project/Group access token | 프로젝트 > Settings > Access tokens | `write_repository` |
+| CI 가 gitops 리포지토리에 커밋 | Project access token (**role: Maintainer**) | gitops 프로젝트 > Settings > Access tokens | `write_repository` |
 | (선택) ApplicationSet 이 그룹을 스캔 | Group access token | 그룹 > Settings > Access tokens | `read_api`, `read_repository` |
 
 발급한 값은 `4.2 시크릿 주입` 에서 Argo CD 에, `6. 앱 리포지토리에 파이프라인 배치` 에서
@@ -1108,14 +1115,116 @@ webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
 
 ## 6. 앱 리포지토리에 파이프라인 배치
 
-`ci/.gitlab-ci.yml` 을 애플리케이션 리포지토리 루트에 같은 이름으로 복사하고,
-**Settings > CI/CD > Variables** 에 파일 머리말의 변수들을 masked 로 등록한다.
-`develop` 은 dev 로 자동 배포, `main` 은 수동 승인 후 prod 로 배포된다.
+`sample-app/`(React 템플릿)과 `ci/.gitlab-ci.yml` 을 GitLab 의 `my-group/sample-app` 리포지토리 루트에 올린다.
+`develop` push 는 dev 로 자동 배포, `main` push 는 수동 승인 후 prod 로 배포된다.
 러너가 없으면 잡이 pending 상태로 멈추므로 `2.4 GitLab Runner 등록` 을 먼저 끝낸다.
 
-- `build-test` → `docker-build-push`(kaniko) → `deploy-dev` / `deploy-prod`
-  (gitops 커밋) → `wait-*`(Argo CD sync/wait) 순으로 돈다.
-- `--insecure --skip-tls-verify` 는 Nexus 를 평문 HTTP 로 쓸 때만 필요하다.
+```
+build-test(node: npm ci/test/build) → docker-build-push(kaniko → Nexus)
+  → deploy-dev|prod(gitops-manifests 의 overlay 태그 커밋) → wait-dev|prod(Argo CD Synced+Healthy 대기)
+```
+
+앱은 정적 파일을 nginx 가 서빙한다. 매니페스트(`manifests/sample-app/base/deployment.yaml`)의 조건 —
+포트 8080, `/healthz`, UID 10001, **읽기 전용 루트 파일시스템** — 에 맞춰 `nginx.conf` 가 쓰기 경로를 전부
+`/tmp`(emptyDir)로 옮긴다. 화면에는 `environment`(Deployment 의 `APP_ENV`, 시작 시 `/tmp/config.js` 로 주입)와
+`version`(빌드 때 넣은 이미지 태그)이 보여서, 같은 이미지가 dev/prod 로 흘러가는 것을 눈으로 확인할 수 있다.
+
+### 6.1 로컬에서 먼저 확인 (WSL)
+
+`npm ci` 에 필요한 `package-lock.json` 을 만들고, 이미지가 **읽기 전용 + UID 10001** 로 뜨는지 CI 전에 본다.
+WSL 에 node 가 없어도 되도록 컨테이너로 돌린다.
+
+```bash
+mkdir -p ~/workspace/sample-app && cd ~/workspace/sample-app
+git init -b main
+cp -r ~/workspace/cicd/sample-app/. .
+cp ~/workspace/cicd/ci/.gitlab-ci.yml .
+
+# package-lock.json 생성 + 테스트
+docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/.npm -v "$PWD":/app -w /app \
+  node:22-alpine sh -c 'npm install --no-audit --no-fund && npm test'
+ls package-lock.json
+
+# 매니페스트와 같은 조건으로 실행해 본다(클러스터 밖이라 베이스 이미지는 Docker Hub 에서)
+docker build --build-arg REGISTRY=docker.io --build-arg APP_VERSION=local-test -t sample-app:local .
+docker run -d --name sample-app-test --read-only --tmpfs /tmp -u 10001 -e APP_ENV=local -p 8088:8080 sample-app:local
+curl -s localhost:8088/healthz            # ok
+curl -s localhost:8088/config.js          # window.APP_CONFIG = { env: "local" }
+docker logs sample-app-test | tail -5     # Read-only file system 오류가 없어야 한다
+docker rm -f sample-app-test
+```
+
+### 6.2 GitLab 준비
+
+1. **프로젝트** — `my-group` 에 `sample-app` (Private, *Initialize repository with a README* 끔).
+2. **gitops 커밋용 토큰** — `my-group/gitops-manifests` > Settings > **Access tokens** > Add new token
+   - Role: **Maintainer** — `main` 이 보호 브랜치라 Developer 로는 push 가 `pre-receive hook declined` 로 거부된다
+   - Scopes: `write_repository`
+   - 발급 화면을 벗어나면 다시 볼 수 없다. WSL 에 `( umask 077; cat > ~/gitops-ci-token.txt )` 로 붙여 넣고 Ctrl-D.
+
+### 6.3 CI/CD 변수 등록
+
+`my-group/sample-app` > Settings > CI/CD > **Variables** > Add variable. **모든 변수에서 *Protect variable* 체크를 끈다.**
+켜 두면 보호 브랜치(`main`)에서만 값이 들어가 `develop` 파이프라인이 빈 값으로 실패한다.
+
+| Key | Value | Visibility |
+|---|---|---|
+| `DOCKER_REGISTRY` | `nexus-docker.example.com` | Visible |
+| `DOCKER_USER` | Nexus 사용자 (push 권한) | Visible |
+| `DOCKER_PASSWORD` | Nexus 비밀번호 | Masked |
+| `GITOPS_REPO` | `gitlab.example.com/my-group/gitops-manifests.git` | Visible |
+| `GITOPS_USER` | `gitlab-ci` (아무 문자열) | Visible |
+| `GITOPS_TOKEN` | `~/gitops-ci-token.txt` | Masked |
+| `ARGOCD_SERVER` | `argocd.example.com:80` | Visible |
+| `ARGOCD_AUTH_TOKEN` | `~/cicd-argocd-token.txt` (4.4) | Masked |
+
+Masked 는 값이 8자 이상이고 공백이 없어야 저장된다.
+
+### 6.4 push → dev 배포
+
+```bash
+cd ~/workspace/sample-app
+git add . && git commit -m "initial: sample-app"
+git remote add origin http://gitlab.example.com/my-group/sample-app.git
+git push -u origin main -o ci.skip       # main 은 prod 용이라 첫 push 는 파이프라인을 건너뛴다
+git push origin main:develop             # develop 생성 → dev 파이프라인 시작
+```
+
+`sample-app` > Build > **Pipelines** 에서 `build-test → docker-build-push → deploy-dev → wait-dev` 가 모두 초록이면 된다.
+첫 실행은 이미지 pull 과 `npm ci` 로 수 분 걸린다.
+
+```bash
+argocd app get sample-app-dev --grpc-web | grep -E 'Sync Status|Health Status'   # Synced / Healthy
+kubectl -n sample-app-dev get pods
+curl -s http://sample-app.dev.example.com/healthz                               # ok
+```
+
+브라우저에서 `http://sample-app.dev.example.com` → `environment: dev`, `version: develop-<sha>`.
+gitops-manifests 에는 `chore(dev): sample-app -> develop-<sha> [skip ci]` 커밋이 생긴다.
+
+### 6.5 (선택) prod 배포
+
+```bash
+git push origin main       # main 파이프라인: build-test → docker-build-push → deploy-prod(수동)
+```
+
+Pipelines 에서 `deploy-prod` 의 ▶ 를 누르면 태그 커밋 후 `wait-prod` 가 sync 까지 건다.
+브라우저로 보려면 Windows/WSL hosts 에 `127.0.0.1 sample-app.example.com` 을 추가한다.
+prod 의 HPA 는 metrics-server 가 없으면 `<unknown>` 으로 표시되지만 배포에는 영향이 없다.
+
+### 6.6 자주 막히는 곳
+
+| 증상 | 원인 |
+|---|---|
+| 잡이 `pending` | 러너 Offline (2.4) 또는 태그 불일치 |
+| `build-test` 가 이미지 pull 실패 | Nexus docker-group 익명 pull (3.3) |
+| kaniko `UNAUTHORIZED` | `DOCKER_USER`/`DOCKER_PASSWORD`, 또는 변수가 Protected |
+| kaniko `http: server gave HTTP response to HTTPS client` | `--insecure-pull` / `--insecure` 누락 |
+| `deploy-dev` 가 `pre-receive hook declined` | `GITOPS_TOKEN` 역할이 Maintainer 가 아님 |
+| `wait-dev` 가 `permission denied` | `ARGOCD_AUTH_TOKEN` (cicd 계정, `argocd-rbac-cm` 의 `role:ci`) |
+| 파드 `CrashLoopBackOff`, 로그에 `Read-only file system` | `nginx.conf` 의 `/tmp` 경로 — 6.1 의 `--read-only` 실행으로 재현 |
+| 파드 `ImagePullBackOff` + `401` | `regcred` (4.5-3) |
+
 - `[skip ci]` 는 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
 
 ## 이미지 태그 갱신 방식 (택1)
