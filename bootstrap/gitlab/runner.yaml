@@ -2,14 +2,17 @@
 # GitLab Runner (kubernetes executor).
 #
 # GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
-# 러너는 등록 토큰이 있어야 기동되므로 GitLab 이 먼저 떠 있어야 한다.
-# 그래서 kustomization.yaml 에서 기본 주석 처리되어 있다.
 #
 # 토큰 발급 (GitLab 16.0+ 의 runner authentication token, glrt- 로 시작):
 #   Admin Area > CI/CD > Runners > New instance runner
 #     - Tags: build
-#     - Run untagged jobs: 체크 (Jenkinsfile 없이 바로 쓰려면)
+#     - Run untagged jobs: 체크
 #   프로젝트 단위로만 쓸 거라면 Project > Settings > CI/CD > Runners 에서 발급.
+#
+# 토큰 Secret(gitlab-runner-secrets, 키 RUNNER_TOKEN)은 이 파일에 두지 않는다.
+# 파일에 두면 토큰이 커밋되거나, 적용할 때마다 placeholder 로 되돌아간다.
+# README 2.4 처럼 kubectl create secret 으로 먼저 만든 뒤 이 파일을 적용한다.
+# Secret 이 없으면 러너 Pod 는 CreateContainerConfigError 로 멈춘다.
 #
 # 잡 Pod 는 러너와 같은 gitlab 네임스페이스에 뜬다.
 # ---------------------------------------------------------------------------
@@ -66,17 +69,6 @@ subjects:
     namespace: gitlab
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: gitlab-runner-secrets
-  namespace: gitlab
-type: Opaque
-stringData:
-  # Admin Area > CI/CD > Runners 에서 발급한 authentication token (glrt-...)
-  # 운영에서는 kubectl create secret / SealedSecrets 로 대체할 것
-  RUNNER_TOKEN: '__REPLACE_ME__'
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: gitlab-runner-config
@@ -89,10 +81,13 @@ data:
     concurrent = 4
     check_interval = 3
     log_level = "info"
+    # /metrics 엔드포인트. Deployment 의 livenessProbe 가 쓴다
+    listen_address = ":9252"
 
     [[runners]]
       name = "kubernetes-runner"
       # 클러스터 내부 주소. 외부 URL 을 쓰면 DNS/Ingress 를 거치게 된다.
+      # 잡의 git clone 은 GitLab external_url(gitlab.example.com)을 따르고, CoreDNS rewrite(README 1.6)로 풀린다.
       url = "http://gitlab.gitlab.svc.cluster.local"
       token = "__RUNNER_TOKEN__"
       executor = "kubernetes"
@@ -133,14 +128,14 @@ spec:
       labels:
         app: gitlab-runner
       annotations:
-        # config.toml 이 바뀌면 수동으로 재시작한다:
+        # config.toml 이나 토큰 Secret 이 바뀌면 수동으로 재시작한다:
         #   kubectl -n gitlab rollout restart deploy/gitlab-runner
         checksum/config: manual
     spec:
       serviceAccountName: gitlab-runner
       containers:
         - name: runner
-          # 서버와 메이저.마이너 버전을 맞추는 것을 권장한다
+          # 서버(gitlab.yaml 의 gitlab-ce 17.11)와 메이저.마이너 버전을 맞춘다
           image: gitlab/gitlab-runner:v17.11.0
           command:
             - /bin/bash
@@ -150,7 +145,10 @@ spec:
               exec gitlab-runner run --config /etc/gitlab-runner/config.toml
           envFrom:
             - secretRef:
-                name: gitlab-runner-secrets
+                name: gitlab-runner-secrets     # README 2.4 에서 kubectl 로 생성
+          ports:
+            - name: metrics
+              containerPort: 9252
           resources:
             requests:
               cpu: 100m
@@ -164,9 +162,13 @@ spec:
               readOnly: true
             - name: config
               mountPath: /etc/gitlab-runner
+          # exec pgrep 은 이미지에 procps 가 있어야 동작하므로 쓰지 않는다.
+          # 러너 프로세스가 PID 1 이라 죽으면 컨테이너가 끝나고, 멈춘 경우는 /metrics 무응답으로 잡는다.
           livenessProbe:
-            exec:
-              command: ["/usr/bin/pgrep", "gitlab-runner"]
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
             periodSeconds: 30
             failureThreshold: 3
       volumes:

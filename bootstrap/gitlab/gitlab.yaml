@@ -1,31 +1,12 @@
-apiVersion: v1
-kind: Secret
-metadata:
-  name: gitlab-secrets
-  namespace: gitlab
-type: Opaque
-stringData:
-  # 값은 반드시 작은따옴표로 감싼다. 감싸지 않으면 ':' '@' '{' '*' '#' 같은
-  # 문자가 들어간 비밀번호가 YAML 파싱 에러를 일으킨다.
-  #
-  # root 계정 초기 비밀번호. 최초 기동(DB 시딩) 때만 반영되고, 이후에는
-  # 값을 바꿔도 무시된다. 비밀번호 변경은 UI 나 rails 콘솔로 한다.
-  #
-  # GitLab 은 8자 이상 + 취약 비밀번호 사전 검사를 한다. 흔한 조합은 거부되고,
-  # 거부되면 시드(003_admin.rb)가 실패하면서 gitlab-ctl reconfigure 전체가
-  # Infra Phase failed 로 끝나 컨테이너가 exit 1 로 죽는다. 증상이 비밀번호와
-  # 무관해 보이므로 로그 끝의 다음 문구로 판별한다:
-  #   Could not create the default administrator account:
-  #   --> Password must not contain commonly used combinations of words and letters
-  # 실제로 '11111111' 과 'admin123' 둘 다 거부됐다. 사전에 없는 조합을 쓴다.
-  #
-  # 한 번 이렇게 실패했다면 비밀번호를 고쳐 파드를 살려도 root 계정은 생기지 않는다.
-  # DB 마이그레이션이 이미 끝나 있어 시드가 다시 돌지 않기 때문이다. 파드는 Ready 인데
-  # 로그인만 'Invalid login or password' 로 막힌다. 복구는 시드 재실행:
-  #   kubectl -n gitlab exec sts/gitlab -- gitlab-rake db:seed_fu
-  # 자세한 내용은 README 2.2.
-  GITLAB_ROOT_PASSWORD: 'Kx7Qm2Vt9Zpr'
----
+# root 초기 비밀번호 Secret(gitlab-secrets, 키 GITLAB_ROOT_PASSWORD)은 이 파일에 두지 않는다.
+# 이 리포지토리는 공개라 파일에 적으면 비밀번호가 그대로 노출된다(실제로 그랬다).
+# README 2.2 처럼 적용 전에 kubectl create secret 으로 만든다. 없으면 GitLab Pod 가
+# CreateContainerConfigError 로 멈춘다.
+#
+# 이 값은 최초 기동(DB 시딩) 때만 쓰인다. GitLab 은 8자 이상 + 취약 비밀번호 사전 검사를 하고,
+# 거부되면 시드(003_admin.rb)가 실패해 reconfigure 가 Infra Phase failed → exit 1 로 죽는다.
+# 로그 끝에 `Password must not contain commonly used combinations` 가 보이면 이 경우다.
+# 실패 후 복구(db:seed_fu)는 README 2.2 참고.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

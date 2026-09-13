@@ -45,7 +45,7 @@ bootstrap/
   gitlab/                     GitLab CE 자체 호스팅 (git + CI)
     namespace.yaml
     local-pv.yaml             단일 노드용 hostPath PV (config / data)
-    gitlab.yaml               GitLab omnibus StatefulSet + Service + PVC + Secret
+    gitlab.yaml               GitLab omnibus StatefulSet + Service + PVC (root 비밀번호 Secret 은 kubectl 로 — 2.2)
     ingress.yaml
     nodeport.yaml
     runner.yaml               GitLab Runner (kubernetes executor) + RBAC
@@ -424,8 +424,14 @@ mkdir -p /data/gitlab/config /data/gitlab/data
 ### 2.2 설치
 
 ```bash
-# root 초기 비밀번호 채우기
-vi bootstrap/gitlab/gitlab.yaml     # GITLAB_ROOT_PASSWORD
+# root 초기 비밀번호 Secret. 파일(gitlab.yaml)에는 적지 않는다 — 공개 리포지토리에 커밋된다.
+# 8자 이상이고 사전에 없는 조합이어야 한다(아래 경고 참고). 셸 기록에 남지 않게 read 로 받는다
+kubectl create namespace gitlab --dry-run=client -o yaml | kubectl apply -f -
+read -rsp 'gitlab root password: ' GL_ROOT; echo
+[ ${#GL_ROOT} -ge 8 ] && kubectl -n gitlab create secret generic gitlab-secrets \
+  --from-literal=GITLAB_ROOT_PASSWORD="$GL_ROOT" --dry-run=client -o yaml | kubectl apply -f -
+unset GL_ROOT
+kubectl -n gitlab get secret gitlab-secrets
 
 kubectl kustomize bootstrap/gitlab | kubectl apply -f -
 
@@ -472,13 +478,13 @@ curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: gitlab.example.com' http://l
 > ```
 >
 > `--> Password must not contain commonly used combinations of words and letters`
-> 가 보이면 이 경우다. `11111111`, `admin123` 은 실제로 거부됐다. Secret 을 고친 뒤
-> **파드를 직접 지워야** 반영된다 — `envFrom` 으로 읽는 Secret 은 값이 바뀌어도
-> 파드를 자동 재시작시키지 않고, Ready 가 아닌 파드는 StatefulSet 롤아웃으로도
+> 가 보이면 이 경우다. `11111111`, `admin123` 은 실제로 거부됐다. 위의 Secret 생성 명령을
+> 새 비밀번호로 다시 실행한 뒤 **파드를 직접 지워야** 반영된다 — `envFrom` 으로 읽는 Secret 은
+> 값이 바뀌어도 파드를 자동 재시작시키지 않고, Ready 가 아닌 파드는 StatefulSet 롤아웃으로도
 > 교체되지 않는다.
 >
 > ```bash
-> kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+> # (위 read → create secret ... | kubectl apply 를 다시 실행한 뒤)
 > kubectl -n gitlab delete pod gitlab-0
 > ```
 >
@@ -534,6 +540,22 @@ kubectl -n gitlab exec -it sts/gitlab -- gitlab-rake "gitlab:password:reset[root
 kubectl -n gitlab exec sts/gitlab -- cat /etc/gitlab/initial_root_password
 ```
 
+> **예전 방식(`gitlab.yaml` 에 비밀번호를 적어 `apply`)으로 설치했다면** 파일에서 Secret 을 뺀 뒤에도
+> 클러스터의 `gitlab-secrets` 에 옛 값이 남는다. `apply` 는 매니페스트에서 사라진 리소스를 지우지 않고,
+> 옛 값은 `kubectl.kubernetes.io/last-applied-configuration` 어노테이션에도 한 번 더 들어 있다.
+> root 비밀번호를 UI 에서 바꿨다면 이 값은 더 이상 쓰이지 않으므로(시딩 때만 사용) 임의 값으로 덮는다.
+> `replace` 는 객체 전체를 교체하므로 어노테이션까지 사라진다.
+>
+> ```bash
+> kubectl -n gitlab create secret generic gitlab-secrets \
+>   --from-literal=GITLAB_ROOT_PASSWORD="$(openssl rand -base64 24)" --dry-run=client -o yaml \
+>   | kubectl replace -f -
+> kubectl -n gitlab get secret gitlab-secrets -o jsonpath='{.metadata.annotations}'; echo   # 비어 있어야 한다
+> ```
+>
+> 실행 중인 `gitlab-0` 의 환경변수에는 다음 재시작까지 옛 값이 남는다. 로그인에는 영향이 없으므로
+> 급하지 않다면 다음에 파드가 재시작될 때 자연히 사라지게 둔다(재시작에 5~10분 걸린다).
+
 ### 2.3 git+ssh
 
 git+ssh 는 HTTP 로 뚫을 수 없어 NodePort 를 쓴다. `bootstrap/gitlab/kustomization.yaml`
@@ -558,23 +580,42 @@ HTTPS(평문 HTTP) clone 만 쓴다면 `nodeport.yaml` 의 ssh 포트와
 GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
 러너는 토큰이 있어야 기동되므로 **GitLab 이 뜬 뒤에** 적용한다.
 
-1. **Admin Area > CI/CD > Runners > New instance runner**
+1. **토큰 발급** — **Admin Area > CI/CD > Runners > New instance runner**
    - Tags: `build`
    - *Run untagged jobs* 체크 (태그 없는 잡도 받게)
-   - 발급된 authentication token(`glrt-...`)을 복사
-2. 토큰을 채우고 러너를 켠다
+   - **Create runner** → 화면의 authentication token(`glrt-...`)을 복사한다.
+     이 화면을 벗어나면 토큰을 다시 볼 수 없다(다시 만들어야 한다).
+     그 아래 `gitlab-runner register` 안내는 따르지 않는다 — 토큰을 config.toml 에 바로 넣는 방식이라 필요 없다.
+
+2. **토큰 Secret 생성** — `runner.yaml` 에는 토큰을 적지 않는다(4.2 와 같은 이유).
 
 ```bash
-vi bootstrap/gitlab/runner.yaml          # RUNNER_TOKEN
-vi bootstrap/gitlab/kustomization.yaml   # - runner.yaml 주석 해제
-
-kubectl kustomize bootstrap/gitlab | kubectl apply -f -
-kubectl -n gitlab logs -f deploy/gitlab-runner
+read -rsp 'runner token (glrt-...): ' RT; echo
+# glrt- 로 시작하지 않으면(빈 값·잘못 붙여 넣기) 만들지 않는다
+[[ $RT == glrt-* ]] && kubectl -n gitlab create secret generic gitlab-runner-secrets \
+  --from-literal=RUNNER_TOKEN="$RT" --dry-run=client -o yaml | kubectl apply -f -
+unset RT
+kubectl -n gitlab get secret gitlab-runner-secrets
 ```
 
-로그에 `Registering runner... succeeded` 또는 `Starting multi-runner` 가 뜨고
-Admin Area 의 러너 목록이 초록색이 되면 성공이다. 잡 Pod 는 `gitlab` 네임스페이스에
-`gitlab-runner-job` 서비스 어카운트로 뜬다(권한 없음).
+3. **러너 적용** — `runner.yaml` 은 `kustomization.yaml` 에 이미 들어 있다.
+   GitLab 본체도 같은 kustomization 이므로, 러너 외에 바뀌는 게 없는지 먼저 diff 로 본다.
+
+```bash
+kubectl kustomize bootstrap/gitlab | kubectl diff -f - | grep -E '^(\+\+\+|---) '
+# gitlab-runner 관련 리소스만 나오면 적용한다. gitlab StatefulSet 등이 보이면 멈추고 내용을 확인한다
+kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+kubectl -n gitlab rollout status deploy/gitlab-runner
+kubectl -n gitlab logs deploy/gitlab-runner --tail=20
+```
+
+로그에 `Configuration loaded` 와 `Starting multi-runner` 가 뜨고, Admin Area > CI/CD > Runners 목록에서
+러너가 **Online**(초록 점)이면 성공이다. glrt 토큰은 등록 절차가 없으므로 `Registering runner` 줄은 나오지 않는다.
+잡 Pod 는 `gitlab` 네임스페이스에 `gitlab-runner-job` 서비스 어카운트로 뜬다(권한 없음).
+
+> - 토큰이 틀리면 로그에 `403 Forbidden` 이 반복된다. 2 를 다시 실행하고
+>   `kubectl -n gitlab rollout restart deploy/gitlab-runner` — 환경변수는 Pod 시작 때만 읽힌다.
+> - Pod 가 `CreateContainerConfigError` 면 2 의 Secret 이 없는 것이다.
 
 ### 2.5 토큰 발급
 
@@ -1027,10 +1068,15 @@ kubectl -n argocd get secret argocd-secret -o jsonpath='{.data.webhook\.gitlab\.
 # __REPLACE_ME__ 또는 빈 줄이면 아직 넣지 않은 상태
 
 ( umask 077; openssl rand -hex 20 > ~/argocd-webhook-secret.txt )
-kubectl -n argocd patch secret argocd-secret --type merge \
+# test -s: 파일이 없거나 비면 patch 하지 않는다. 빈 값이 들어가면 Argo CD 는 서명 검증 없이 모든 요청을 받는다
+test -s ~/argocd-webhook-secret.txt && kubectl -n argocd patch secret argocd-secret --type merge \
   -p "{\"stringData\":{\"webhook.gitlab.secret\":\"$(cat ~/argocd-webhook-secret.txt)\"}}"
 kubectl -n argocd rollout restart deploy/argocd-server     # 확실히 새 값을 읽게 한다
 kubectl -n argocd rollout status deploy/argocd-server
+
+# 값을 출력하지 않고 파일과 같은지만 확인
+[ "$(kubectl -n argocd get secret argocd-secret -o jsonpath='{.data.webhook\.gitlab\.secret}' | base64 -d)" \
+  = "$(cat ~/argocd-webhook-secret.txt)" ] && echo OK
 ```
 
 **2. GitLab 에 등록**
