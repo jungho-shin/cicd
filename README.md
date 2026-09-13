@@ -101,12 +101,18 @@ CI 를 Jenkins 로 대체하려면 2~6 을 끝낸 뒤 `부록: Jenkins 자체 �
 | placeholder | 의미 |
 |---|---|
 | `my-group` | GitLab 그룹 |
-| `argocd.example.com` / `grpc.argocd.example.com` | Argo CD 호스트 |
-| `my-registry.example.com` | 컨테이너 레지스트리 (Nexus 를 쓰면 `nexus-docker.example.com`) |
-| `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리 호스트 |
-| `gitlab.example.com` | GitLab 호스트 (브라우저 접속용). 클러스터 안에서는 `gitlab.gitlab.svc.cluster.local` |
-| `sample-app.example.com` | 서비스 호스트 |
 | `__REPLACE_ME__` | 실제 시크릿 값 (커밋 금지) |
+
+아래 `*.example.com` 호스트는 **치환 대상이 아니라 그대로 쓰는 이름**이다. 클러스터 밖에서는
+Windows hosts 파일(1.5), 클러스터 안에서는 CoreDNS rewrite(1.6)로 같은 이름이 풀린다.
+실제 도메인으로 옮길 때만 바꾼다.
+
+| 호스트 | 용도 |
+|---|---|
+| `gitlab.example.com` | GitLab (브라우저, git clone, Argo CD `repoURL`, API) |
+| `argocd.example.com` | Argo CD UI·CLI (`:80`, 4.3). `grpc.argocd.example.com` 은 TLS 구성용 |
+| `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리(이미지 주소) |
+| `sample-app.example.com` / `sample-app.dev.example.com` | 서비스 호스트 |
 
 ## 1. 클러스터 준비 (kind on WSL2)
 
@@ -760,12 +766,15 @@ kubectl -n sample-app-dev create secret docker-registry regcred \
   --docker-username='<nexus-user>' --docker-password='<password>'
 ```
 
-`manifests/sample-app/base/deployment.yaml` 에 `imagePullSecrets: [{name: regcred}]` 를 추가한다.
+`manifests/sample-app/base/deployment.yaml` 에는 `imagePullSecrets: [{name: regcred}]` 가
+이미 들어 있다. 시크릿 이름만 `regcred` 로 맞추면 된다. docker-group 만 익명 pull 을 허용하므로(3.3)
+docker-hosted 의 앱 이미지는 이 시크릿이 없으면 `ImagePullBackOff` 가 난다.
 
-**3. 이미지 주소 교체** — `my-registry.example.com` 을 쓰는 곳을 모두 바꾼다.
+**3. 이미지 주소** — 매니페스트·CI·Image Updater 는 이미 `nexus-docker.example.com` 으로
+맞춰져 있다. 다른 레지스트리로 옮길 때 바꿀 곳은 아래로 찾는다.
 
 ```bash
-grep -rl 'my-registry.example.com' apps/ manifests/ ci/ bootstrap/
+grep -rl 'nexus-docker.example.com' apps/ manifests/ ci/ bootstrap/
 ```
 
 **4. Maven/npm 캐시** — 빌드 잡의 컨테이너에서 Nexus 를 미러로 지정한다.
@@ -917,7 +926,8 @@ gitops 리포지토리 → **Settings > Webhooks > Add new webhook**
 - Trigger: `Push events`
 
 webhook 은 payload 의 리포지토리 URL 이 등록된 Application 의 `repoURL` 과 일치할 때만
-refresh 를 트리거한다. 내부 주소로 등록했다면 `apps/` 의 `repoURL` 도 같은 주소여야 한다.
+refresh 를 트리거한다. payload 의 URL 은 GitLab `external_url`(`http://gitlab.example.com`)을
+따르고, `apps/` 의 `repoURL` 도 같은 주소로 맞춰 두었으므로 추가 설정은 없다.
 
 자체 호스팅 GitLab 은 **Admin Area > Settings > Network > Outbound requests** 에서
 *Allow requests to the local network from webhooks* 를 켜야 한다. 기본값은 차단이라
@@ -999,7 +1009,7 @@ chown -R 1000:1000 /data/jenkins
 vi bootstrap/jenkins/casc.yaml
 
 # 레지스트리 푸시용 자격증명 (kaniko 가 사용)
-kubectl -n jenkins create secret docker-registry regcred   --docker-server=my-registry.example.com   --docker-username='<user>' --docker-password='<password>'
+kubectl -n jenkins create secret docker-registry regcred   --docker-server=nexus-docker.example.com   --docker-username='<user>' --docker-password='<password>'
 # 생성 후 casc.yaml 의 Pod 템플릿 volumes 주석을 해제한다
 
 kubectl kustomize bootstrap/jenkins | kubectl apply -f -

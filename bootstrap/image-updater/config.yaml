@@ -14,8 +14,10 @@ data:
   git.email: argocd-image-updater@example.com
   registries.conf: |
     registries:
+      # Nexus docker-hosted. 평문(HTTP)이므로 api_url 도 http 이고 insecure 를 켠다.
       - name: private-registry
-        api_url: https://my-registry.example.com
-        prefix: my-registry.example.com
+        api_url: http://nexus-docker.example.com
+        prefix: nexus-docker.example.com
+        insecure: yes
         credentials: pullsecret:argocd/regcred
         default: true

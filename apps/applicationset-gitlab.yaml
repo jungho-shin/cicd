@@ -12,8 +12,8 @@ spec:
     - scmProvider:
         gitlab:
           group: my-group
-          # 자체 호스팅이면 클러스터 내부 주소. Argo CD 가 /api/v4 를 붙인다.
-          api: http://gitlab.gitlab.svc.cluster.local/
+          # Argo CD 가 /api/v4 를 붙인다. 클러스터 안에서는 CoreDNS rewrite(README 1.6)로 풀린다.
+          api: http://gitlab.example.com/
           includeSubgroups: true
           tokenRef:
             secretName: gitlab-scm-credentials
@@ -21,9 +21,9 @@ spec:
         filters:
           - repositoryMatch: '^svc-.*'
             pathsExist: [.argocd.yaml, manifests]
-        # 생성되는 repoURL 은 GitLab 의 external_url 을 그대로 따른다.
-        # gitlab.example.com 을 쓴다면 Argo CD Pod 에서 그 호스트가 풀려야 하므로
-        # CoreDNS 에 rewrite 를 넣거나, external_url 을 내부 주소로 맞춘다.
+        # 생성되는 repoURL 은 GitLab 의 external_url(http://gitlab.example.com)을 그대로 따른다.
+        # CoreDNS rewrite(README 1.6)가 있으므로 Argo CD Pod 에서도 풀린다.
+        # https 는 "HTTP 계열 clone URL" 이라는 뜻이고, 실제 스킴은 external_url 을 따른다.
         cloneProtocol: https
   template:
     metadata:

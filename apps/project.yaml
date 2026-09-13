@@ -8,7 +8,7 @@ metadata:
 spec:
   description: 개발 환경 애플리케이션
   sourceRepos:
-    - http://gitlab.gitlab.svc.cluster.local/my-group/*
+    - http://gitlab.example.com/my-group/*
   destinations:
     - server: https://kubernetes.default.svc
       namespace: 'dev-*'
@@ -39,7 +39,7 @@ metadata:
 spec:
   description: 운영 환경 애플리케이션
   sourceRepos:
-    - http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+    - http://gitlab.example.com/my-group/gitops-manifests.git
   destinations:
     - server: https://kubernetes.default.svc
       namespace: 'prod-*'

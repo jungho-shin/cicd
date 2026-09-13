@@ -7,9 +7,9 @@ metadata:
   name: argocd-notifications-cm
 data:
   # GitLab 커밋에 배포 상태(commit status) 를 되돌려 기록한다.
-  # 자체 호스팅이므로 API 주소는 클러스터 내부 주소를 쓴다.
+  # 클러스터 안에서도 gitlab.example.com 을 쓴다(CoreDNS rewrite, README 1.6).
   service.webhook.gitlab: |
-    url: http://gitlab.gitlab.svc.cluster.local/api/v4
+    url: http://gitlab.example.com/api/v4
     headers:
       - name: PRIVATE-TOKEN
         value: $gitlab-token

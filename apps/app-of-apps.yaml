@@ -10,7 +10,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
+    repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
     targetRevision: main
     path: apps
     directory:

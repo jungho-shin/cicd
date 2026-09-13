@@ -26,7 +26,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: my-registry.example.com/my-group/sample-app:latest
+          image: nexus-docker.example.com/my-group/sample-app:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
