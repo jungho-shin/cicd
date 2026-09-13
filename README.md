@@ -780,9 +780,17 @@ kaniko 가 `/kaniko/.docker` 로 이 시크릿을 읽는다.
 **2. 앱 네임스페이스 pull secret** — 이미지를 내려받을 네임스페이스마다 필요하다.
 
 ```bash
-kubectl -n sample-app-dev create secret docker-registry regcred \
-  --docker-server=nexus-docker.example.com \
-  --docker-username='<nexus-user>' --docker-password='<password>'
+# 비밀번호가 셸 기록에 남지 않게 read 로 받는다. create ... | apply 형태라 다시 실행해도 된다
+read -rp 'nexus user: ' NX_USER; read -rsp 'nexus password: ' NX_PASS; echo
+for ns in sample-app-dev sample-app-prod; do
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "$ns" create secret docker-registry regcred \
+    --docker-server=nexus-docker.example.com \
+    --docker-username="$NX_USER" --docker-password="$NX_PASS" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
+unset NX_USER NX_PASS
+kubectl get secret regcred -n sample-app-dev; kubectl get secret regcred -n sample-app-prod
 ```
 
 `manifests/sample-app/base/deployment.yaml` 에는 `imagePullSecrets: [{name: regcred}]` 가
@@ -930,11 +938,64 @@ argocd account generate-token --account cicd --grpc-web
 
 ### 4.5 애플리케이션 등록
 
+Argo CD 는 이 리포지토리가 아니라 **GitLab 의 `my-group/gitops-manifests`** 를 읽는다.
+그래서 아래 선행 조건이 먼저 필요하다.
+
+**1. gitops 리포지토리 만들기** — GitLab UI 에서 그룹 `my-group` 과 프로젝트
+`gitops-manifests` 를 만든다. *Initialize repository with a README* 는 **끈다**(켜면 첫 push 가 거부된다).
+이 리포지토리의 `apps/` 와 `manifests/` 만 복사해 **루트에** 올린다. 이후 CI 가 이미지 태그를
+이 리포지토리에 직접 커밋하므로, cicd 리포지토리와는 별개 이력으로 관리한다.
+
 ```bash
+mkdir -p ~/workspace/gitops-manifests && cd ~/workspace/gitops-manifests
+git init -b main
+cp -r ~/workspace/cicd/apps ~/workspace/cicd/manifests .
+git add . && git commit -m "initial: apps, manifests"
+git remote add origin http://gitlab.example.com/my-group/gitops-manifests.git
+git push -u origin main      # GitLab 사용자명 + 비밀번호(또는 write_repository 토큰)
+```
+
+**2. Argo CD 에 리포지토리 자격증명 등록** — 2.5 의 Deploy token(`read_repository`)으로 4.2-A 를 실행한다.
+토큰이 셸 기록에 남지 않게 `read` 로 받는다. Deploy token 의 username 은 발급 화면에 나오는
+`gitlab+deploy-token-<N>` 형태다(GitLab 로그인 계정이 아니다). 발급 화면을 닫으면 토큰은 다시 볼 수 없다.
+
+```bash
+read -rp 'deploy token username: ' DT_USER; read -rsp 'deploy token: ' DT_PASS; echo
+kubectl -n argocd create secret generic repo-gitlab-https \
+  --from-literal=type=git \
+  --from-literal=url=http://gitlab.example.com/my-group/gitops-manifests.git \
+  --from-literal=username="$DT_USER" --from-literal=password="$DT_PASS" \
+  --dry-run=client -o yaml \
+  | kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml \
+  | kubectl apply -f -
+unset DT_USER DT_PASS
+
+argocd repo list --grpc-web     # STATUS 가 Successful 이어야 한다
+```
+
+**3. 앱 네임스페이스 pull secret** — 3.5-2 를 실행한다(dev, prod 두 네임스페이스).
+
+**4. 등록**
+
+```bash
+cd ~/workspace/cicd
 kubectl apply -f apps/app-of-apps.yaml
-# 이후 apps/ 아래 파일을 추가/수정하면 Argo CD 가 자동으로 반영한다.
+# 이후 gitops-manifests 의 apps/ 아래 파일을 추가/수정하면 Argo CD 가 자동으로 반영한다.
 argocd app list --grpc-web
 ```
+
+기대 상태:
+
+| Application | SYNC | HEALTH | 이유 |
+|---|---|---|---|
+| `bootstrap` | Synced | Healthy | |
+| `sample-app-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 6단계 CI 가 첫 태그를 커밋하면 풀린다 |
+| `sample-app-prod` | OutOfSync | Missing | 수동 동기화 대상(`automated` 없음) |
+
+- `apps/applicationset-gitlab.yaml` 은 `app-of-apps.yaml` 의 `exclude` 로 **기본 제외**된다.
+  같은 파일의 placeholder Secret 이 selfHeal 로 실제 토큰을 덮어쓰기 때문이다.
+- `argocd repo list` 가 실패하면 Application 이 `ComparisonError` / `repository not found` 가 된다.
+  Deploy token 의 스코프(`read_repository`)와 URL 끝의 `.git` 을 확인한다.
 
 ## 5. GitLab webhook 연결
 
