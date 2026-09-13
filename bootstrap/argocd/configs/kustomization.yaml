@@ -11,10 +11,14 @@ resources: []
 
 # install.yaml 에 이미 존재하는 ConfigMap/Secret 은 patch 로 병합한다.
 # (resources 로 넣으면 "already registered id" 오류가 난다)
+#
+# argocd-secret.yaml / notifications-secret.yaml 은 기본 제외한다. 값이 __REPLACE_ME__ 라
+# 적용하면 README 5 / 4.2 의 kubectl patch 로 넣은 실제 값을 되돌리고, 실제 값을 파일에
+# 적으면 커밋된다. 파일은 키 이름 예시로 보관한다.
 patches:
   - path: argocd-cm.yaml
   - path: argocd-rbac-cm.yaml
   - path: argocd-cmd-params-cm.yaml
-  - path: argocd-secret.yaml
   - path: notifications-cm.yaml
-  - path: notifications-secret.yaml
+  # - path: argocd-secret.yaml
+  # - path: notifications-secret.yaml

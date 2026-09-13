@@ -29,10 +29,10 @@ bootstrap/
       argocd-cm.yaml          url, SSO(dex), kustomize 옵션
       argocd-rbac-cm.yaml     역할/그룹 정책
       argocd-cmd-params-cm.yaml  server.insecure, 튜닝 파라미터
-      argocd-secret.yaml      webhook 시크릿
-      repo-gitlab.yaml        GitLab 리포지토리 자격증명 (신규 리소스)
+      argocd-secret.yaml      webhook 시크릿 (예시, 적용 안 함 — README 5)
+      repo-gitlab.yaml        GitLab 리포지토리 자격증명 (예시, 적용 안 함 — README 4.2)
       notifications-cm.yaml   배포 결과를 GitLab commit status 로 회신
-      notifications-secret.yaml
+      notifications-secret.yaml  (예시, 적용 안 함 — README 4.2)
   image-updater/              (선택) Argo CD Image Updater
   jenkins/                    (선택) Jenkins 컨트롤러 - GitLab CI 대체
     namespace.yaml
@@ -898,6 +898,22 @@ kubectl -n sample-app-dev create secret docker-registry regcred \
 `create` 가 `AlreadyExists` 로 실패하고, 이후 `apply` 할 때마다 실제 값을 덮어쓴다.
 토큰이 아직 없어도(2.5) 4.1 설치는 먼저 진행해도 된다.
 
+같은 이유로 `configs/argocd-secret.yaml`(webhook 시크릿)과 `configs/notifications-secret.yaml`
+(알림용 GitLab 토큰)도 patches 에서 **기본 제외**돼 있다. 이 둘은 install.yaml 에 이미 있는
+Secret 이라 `create` 대신 `patch` 로 키만 넣는다. webhook 시크릿은 5장에서 넣는다.
+
+```bash
+# (선택) 알림용 GitLab 토큰 — commit status 를 기록할 프로젝트의 access token (api 스코프)
+read -rsp 'gitlab api token: ' GL_TOKEN; echo
+kubectl -n argocd patch secret argocd-notifications-secret --type merge \
+  -p "{\"stringData\":{\"gitlab-token\":\"$GL_TOKEN\"}}"
+unset GL_TOKEN
+```
+
+> 4.1 을 이 변경 전에 적용했다면 두 Secret 에 `__REPLACE_ME__` 가 이미 들어가 있다.
+> 위 `patch` 로 덮어쓰면 된다. patch 로 바꾼 키는 소유자가 `kubectl-patch` 로 넘어가므로,
+> 이후 `bootstrap/argocd` 를 `--server-side` 로 다시 적용해도 지워지거나 되돌아가지 않는다.
+
 **B. Sealed Secrets** — `kubeseal` 로 암호화한 `SealedSecret` 을 커밋.
 **C. External Secrets Operator** — Vault/AWS Secrets Manager 등에서 주입.
 
@@ -947,6 +963,10 @@ Argo CD 는 이 리포지토리가 아니라 **GitLab 의 `my-group/gitops-manif
 이 리포지토리에 직접 커밋하므로, cicd 리포지토리와는 별개 이력으로 관리한다.
 
 ```bash
+# WSL 에서 처음 커밋한다면 작성자부터 설정한다(없으면 "Author identity unknown" 으로 실패)
+git config --global user.name >/dev/null || git config --global user.name '<name>'
+git config --global user.email >/dev/null || git config --global user.email '<email>'
+
 mkdir -p ~/workspace/gitops-manifests && cd ~/workspace/gitops-manifests
 git init -b main
 cp -r ~/workspace/cicd/apps ~/workspace/cicd/manifests .
@@ -999,19 +1019,44 @@ argocd app list --grpc-web
 
 ## 5. GitLab webhook 연결
 
-gitops 리포지토리 → **Settings > Webhooks > Add new webhook**
+**1. webhook 시크릿 만들기** — 임의 값을 만들어 `argocd-secret` 에 넣는다. 파일(`configs/argocd-secret.yaml`)에는
+적지 않는다(4.2). GitLab 에 붙여 넣을 수 있게 권한 600 파일로 보관한다.
+
+```bash
+kubectl -n argocd get secret argocd-secret -o jsonpath='{.data.webhook\.gitlab\.secret}' | base64 -d; echo
+# __REPLACE_ME__ 또는 빈 줄이면 아직 넣지 않은 상태
+
+( umask 077; openssl rand -hex 20 > ~/argocd-webhook-secret.txt )
+kubectl -n argocd patch secret argocd-secret --type merge \
+  -p "{\"stringData\":{\"webhook.gitlab.secret\":\"$(cat ~/argocd-webhook-secret.txt)\"}}"
+kubectl -n argocd rollout restart deploy/argocd-server     # 확실히 새 값을 읽게 한다
+kubectl -n argocd rollout status deploy/argocd-server
+```
+
+**2. GitLab 에 등록**
+
+먼저 **Admin Area > Settings > Network > Outbound requests** 에서
+*Allow requests to the local network from webhooks and integrations* 를 켜고 저장한다.
+기본값은 차단이라, 켜지 않으면 클러스터 내부 URL(`*.svc.cluster.local`)을 넣은 webhook 저장이
+`Url is blocked: Requests to the local network are not allowed` 로 거부된다.
+
+그다음 gitops 리포지토리 → **Settings > Webhooks > Add new webhook**
 
 - URL: `http://argocd-server.argocd.svc.cluster.local/api/webhook` (자체 호스팅이면 클러스터 내부 주소로 충분하다)
-- Secret token: `bootstrap/argocd/configs/argocd-secret.yaml` 의 `webhook.gitlab.secret` 과 같은 값
+- Secret token: `cat ~/argocd-webhook-secret.txt` 의 값
 - Trigger: `Push events`
+- SSL verification: 평문 URL 이라 무관하다
+
+**3. 확인** — 등록한 webhook 의 **Test > Push events** → 상단에 `Hook executed successfully: HTTP 200`.
+실패하면 같은 화면의 **Edit > Recent events** 에서 응답 본문을 본다.
+
+```bash
+kubectl -n argocd logs deploy/argocd-server --since=2m | grep -i webhook
+```
 
 webhook 은 payload 의 리포지토리 URL 이 등록된 Application 의 `repoURL` 과 일치할 때만
 refresh 를 트리거한다. payload 의 URL 은 GitLab `external_url`(`http://gitlab.example.com`)을
 따르고, `apps/` 의 `repoURL` 도 같은 주소로 맞춰 두었으므로 추가 설정은 없다.
-
-자체 호스팅 GitLab 은 **Admin Area > Settings > Network > Outbound requests** 에서
-*Allow requests to the local network from webhooks* 를 켜야 한다. 기본값은 차단이라
-webhook 이 조용히 실패한다.
 
 webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
 
