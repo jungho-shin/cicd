@@ -23,9 +23,9 @@ spec:
                 port:
                   name: http
 ---
-# argocd CLI 는 gRPC 를 사용하므로 별도 호스트로 분리하는 것이 안정적이다.
-# 평문이므로 CLI 에는 --grpc-web --plaintext 를 붙인다(README 4.3).
-# backend-protocol: GRPC 는 h2c(평문 HTTP/2)로 argocd-server 에 붙는다.
+# native gRPC 용 호스트. 클라이언트→nginx 구간이 HTTP/2 여야 쓸모가 있어 TLS 가 전제다.
+# 평문 구성(현재)에서는 쓰지 않는다. CLI 와 CI 는 위 argocd.example.com:80 에
+# --grpc-web --plaintext 로 붙는다(README 4.3). TLS 를 붙일 때를 위해 남겨 둔다.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

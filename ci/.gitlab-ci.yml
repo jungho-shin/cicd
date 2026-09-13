@@ -12,7 +12,7 @@
 #   GITOPS_REPO          gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git
 #   GITOPS_USER          project access token 의 이름
 #   GITOPS_TOKEN         Project/Group access token (write_repository)
-#   ARGOCD_SERVER        grpc.argocd.example.com
+#   ARGOCD_SERVER        argocd.example.com:80   (평문 Ingress. 포트 생략 시 443 으로 붙을 수 있다)
 #   ARGOCD_AUTH_TOKEN    `argocd account generate-token --account cicd`
 #
 # 러너는 bootstrap/gitlab/runner.yaml (kubernetes executor) 를 전제로 한다.

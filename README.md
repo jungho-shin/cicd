@@ -803,12 +803,38 @@ kubectl -n nexus scale sts/nexus --replicas=1
 
 ```bash
 # 버전 확인 후 bootstrap/argocd/kustomization.yaml 의 태그 조정
-kubectl kustomize --enable-helm bootstrap/argocd | kubectl apply -f -
+# --server-side 필수 (아래 설명)
+kubectl kustomize --enable-helm bootstrap/argocd | kubectl apply --server-side --force-conflicts -f -
 
 # 설치 확인
 kubectl -n argocd rollout status deploy/argocd-server
 kubectl -n argocd get pods
+kubectl get crd applicationsets.argoproj.io
 ```
+
+> **`--server-side` 를 빼면** `The CustomResourceDefinition "applicationsets.argoproj.io"
+> is invalid: metadata.annotations: Too long` 로 ApplicationSet CRD 만 생성되지 않는다.
+> 클라이언트 측 apply 는 전체 매니페스트를 `last-applied-configuration` annotation 에
+> 저장하는데, 이 CRD 가 annotation 한도(262144 bytes)를 넘기 때문이다. 나머지 리소스는
+> 만들어지므로 `argocd-applicationset-controller` 만 CRD 를 못 찾아 재시작을 반복한다.
+> 이미 그렇게 설치했다면 위 명령을 다시 실행하면 된다. `--force-conflicts` 는 클라이언트
+> 측 apply 로 만든 리소스의 필드 소유권을 넘겨받기 위해 필요하다.
+> `Warning: unrecognized format "int64"` 는 무해하다.
+
+**argocd CLI** — 서버와 같은 버전을 WSL 에 설치한다.
+
+```bash
+VERSION=v3.5.2
+# -f: 404 면 실패로 끝낸다(없으면 "Not Found" 본문이 파일로 저장된다)
+curl -fsSL -o /tmp/argocd https://github.com/argoproj/argo-cd/releases/download/${VERSION:?VERSION 을 먼저 설정}/argocd-linux-amd64 \
+  && sudo install -m 555 /tmp/argocd /usr/local/bin/argocd && rm /tmp/argocd
+argocd version --client
+```
+
+> `VERSION=` 줄을 빼먹으면 URL 이 `.../download//argocd-linux-amd64` 가 되어 404 가 난다.
+> `-f` 없이 받으면 `Not Found` 라는 텍스트가 설치되어 `argocd: line 1: Not: command not found` 가 뜬다.
+
+WSL 에서 `argocd.example.com` 은 Windows hosts 파일(1.5)로 `127.0.0.1` 로 풀린다.
 
 ### 4.2 시크릿 주입
 
@@ -845,12 +871,25 @@ kubectl -n sample-app-dev create secret docker-registry regcred \
 kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 
-# Ingress 가 평문(HTTP)이므로 --plaintext 를 붙인다
-argocd login grpc.argocd.example.com --grpc-web --plaintext --username admin
+# 평문(HTTP) Ingress 로 로그인한다. 네 옵션과 :80 이 모두 필요하다(아래 설명)
+argocd login argocd.example.com:80 --grpc-web --plaintext --skip-test-tls --username admin
 argocd account update-password
 # 초기 시크릿 삭제
 kubectl -n argocd delete secret argocd-initial-admin-secret
 ```
+
+> 옵션을 하나라도 빼면 비밀번호를 묻기도 전에
+> `gRPC connection not ready: context deadline exceeded` 로 멈춘다.
+>
+> - `--skip-test-tls` — `login` 은 로그인 전에 TLS 확인을 하는데, 이 단계는 `--grpc-web` 을
+>   따르지 않고 native gRPC(HTTP/2)로 붙는다. 평문 80 에서는 nginx 가 HTTP/2 를 받지 않아
+>   여기서 시간 초과가 난다(argo-cd issue #27210, #12359). `login` 에만 있는 옵션이다.
+> - `:80` — 포트를 생략하면 CLI 가 443 을 기본으로 붙이는 경우가 있다.
+> - `--grpc-web` / `--plaintext` — HTTP/1.1 로, TLS 없이 붙는다. 로그인 후 컨텍스트에
+>   저장되므로 4.4·4.5 의 명령에는 `--grpc-web` 만 붙여도 된다.
+>
+> `grpc.argocd.example.com`(backend-protocol GRPC)은 평문 구성에서는 쓰지 않는다.
+> 클라이언트→nginx 구간이 HTTP/2 여야 의미가 있는데, 그러려면 TLS 가 필요하다.
 
 ### 4.4 CI 전용 계정 토큰 발급
 

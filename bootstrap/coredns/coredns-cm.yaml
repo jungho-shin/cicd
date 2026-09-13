@@ -24,7 +24,7 @@
 #   nexus-docker-group.example.com  Docker 레지스트리 (pull 전용)
 #   gitlab.example.com              GitLab (Argo CD repoURL, CI 의 GITOPS_REPO)
 #   argocd.example.com              Argo CD UI
-#   grpc.argocd.example.com         Argo CD gRPC (CI 의 ARGOCD_SERVER)
+#   grpc.argocd.example.com         Argo CD native gRPC (TLS 구성용. 평문에서는 argocd.example.com 사용)
 #   jenkins.example.com             Jenkins (부록)
 #   sample-app.dev.example.com      샘플 앱 dev
 #   sample-app.example.com          샘플 앱 prod
