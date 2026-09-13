@@ -200,6 +200,10 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/cont
 # 컨트롤러를 거기에 고정하지 않으면 worker 에 떠서 접속이 안 된다.
 kubectl -n ingress-nginx patch deploy ingress-nginx-controller --type=merge -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux","ingress-ready":"true"}}}}}'
 
+# reuseport 끄기 + 워커 수 고정 (아래 설명). 설정 리로드 후 요청 일부가 영영 응답 없이 멈추는 것을 막는다
+kubectl -n ingress-nginx patch configmap ingress-nginx-controller --type=merge -p '{"data":{"reuse-port":"false","worker-processes":"4"}}'
+kubectl -n ingress-nginx rollout restart deploy/ingress-nginx-controller
+
 kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s
 kubectl -n ingress-nginx get pods -o wide     # NODE 가 control-plane 이어야 한다
 ```
@@ -209,6 +213,21 @@ kubectl -n ingress-nginx get pods -o wide     # NODE 가 control-plane 이어야
 - `ingress-nginx-controller` 서비스가 `LoadBalancer` / `EXTERNAL-IP <pending>` 으로
   남는 것은 정상이다. kind 에 LB 프로바이더가 없을 뿐, 실제 통로는
   hostPort 80/443 → docker 포트 매핑이다.
+- **`reuse-port: "false"` / `worker-processes` 고정을 빼면** 설정 리로드(Ingress 를 추가·수정할
+  때마다 일어난다) 뒤 요청의 일부가 연결만 되고 응답 없이 멈출 수 있다. 기본값
+  `listen 80 reuseport` 는 워커마다 LISTEN 소켓을 따로 만드는데, 리로드로 워커 수가
+  줄면(`worker-processes: auto`) 사라진 워커 몫의 소켓이 master 에만 남아 아무도
+  `accept` 하지 않는다. 커널은 새 연결을 소켓들에 해시로 나누므로 **같은 요청이 되다
+  안 되다 한다**. nginx error 로그도 남지 않고 파드는 계속 Ready 다.
+  - 증상: `curl http://argocd.example.com/healthz` 가 가끔 `000`(타임아웃),
+    `argocd login` 이 비밀번호 입력 후 멈춤, 브라우저에서 GitLab/Nexus 가 간헐적으로 무응답.
+  - 확인: 주인 없는 LISTEN 소켓(워커 PID 없이 master 만 있고 Recv-Q 가 쌓인 줄)이 있으면 이 문제다.
+    ```bash
+    MASTER=$(pgrep -f 'nginx: master process /usr/bin/nginx')
+    sudo nsenter -t "$MASTER" -n ss -ltnp 'sport = :80'
+    ```
+  - 복구: 위 `patch configmap` + `rollout restart` 를 실행한다. 재시작만 해도 당장은 풀리지만
+    다음 리로드에서 재발할 수 있다.
 
 ### 1.4 접속 확인
 
