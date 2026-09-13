@@ -26,7 +26,7 @@ data:
           {
             "state": "success",
             "name": "argocd/{{.app.metadata.name}}",
-            "target_url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
+            "target_url": "http://argocd.example.com/applications/{{.app.metadata.name}}",
             "description": "Synced to {{.app.status.sync.revision}}"
           }
 
@@ -39,7 +39,7 @@ data:
           {
             "state": "failed",
             "name": "argocd/{{.app.metadata.name}}",
-            "target_url": "https://argocd.example.com/applications/{{.app.metadata.name}}",
+            "target_url": "http://argocd.example.com/applications/{{.app.metadata.name}}",
             "description": "Sync failed"
           }
 

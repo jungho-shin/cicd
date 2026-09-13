@@ -632,8 +632,27 @@ kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password; echo
 포트가 뚫려 있으므로 UI 설정만 하면 된다.
 
 `docker login` 을 쓰려면 **Settings > Security > Realms** 에서
-`Docker Bearer Token Realm` 을 Active 로 옮긴다. 익명 pull 을 막으려면
-**Security > Anonymous Access** 를 끈다.
+`Docker Bearer Token Realm` 을 Active 로 옮긴다.
+
+**익명 pull 은 `docker-group` 에만 허용한다.** Docker Hub 공개 이미지 캐시는
+자격증명 없이 받고, `docker-hosted` 에 올린 앱 이미지는 `regcred`(3.5)로 받는다.
+
+1. **Security > Realms** — `Docker Bearer Token Realm` 이 Active 인지 확인
+2. **Security > Anonymous Access** — *Allow anonymous users to access the server* 체크
+3. **Repositories > docker-group** — *Allow anonymous docker pull* 체크
+4. **Repositories > docker-hosted** — *Allow anonymous docker pull* 은 체크하지 않는다
+
+> 그룹은 멤버의 내용을 합쳐 보여주므로, `docker-hosted` 가 멤버로 들어 있으면 앱
+> 이미지도 `nexus-docker-group.example.com/...` 으로 익명 pull 된다. 막으려면
+> `docker-group` 의 멤버를 `docker-hub` 하나로 줄인다.
+
+확인 — 자격증명 없이 성공해야 한다.
+
+```bash
+docker exec devops-worker crictl pull nexus-docker-group.example.com/library/alpine:3.20
+```
+
+설정 전에는 `no basic auth credentials` 로 실패한다. 경로는 정상이고 인증에서 막힌 것이다.
 
 ### 3.4 TLS 없이 쓸 때 (로컬 클러스터)
 
@@ -823,7 +842,8 @@ kubectl -n sample-app-dev create secret docker-registry regcred \
 kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath='{.data.password}' | base64 -d; echo
 
-argocd login grpc.argocd.example.com --grpc-web --username admin
+# Ingress 가 평문(HTTP)이므로 --plaintext 를 붙인다
+argocd login grpc.argocd.example.com --grpc-web --plaintext --username admin
 argocd account update-password
 # 초기 시크릿 삭제
 kubectl -n argocd delete secret argocd-initial-admin-secret

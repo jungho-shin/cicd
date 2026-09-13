@@ -77,7 +77,8 @@ docker-build-push:
   variables:
     GIT_STRATEGY: none
   script:
-    - export ARGOCD_OPTS="--grpc-web --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
+    # Argo CD Ingress 가 평문(HTTP)이므로 --plaintext 가 필요하다.
+    - export ARGOCD_OPTS="--grpc-web --plaintext --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
     - argocd app sync "sample-app-${DEPLOY_ENV}" $ARGOCD_OPTS
     - argocd app wait "sample-app-${DEPLOY_ENV}" --health --timeout 600 $ARGOCD_OPTS
 

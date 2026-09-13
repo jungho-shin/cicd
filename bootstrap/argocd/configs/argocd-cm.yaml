@@ -10,7 +10,8 @@ metadata:
     app.kubernetes.io/part-of: argocd
 data:
   # 외부 접속 URL (Ingress host 와 일치해야 SSO/링크가 정상 동작)
-  url: https://argocd.example.com
+  # Ingress 가 평문(HTTP)이므로 스킴도 http 로 맞춘다(bootstrap/argocd/ingress.yaml).
+  url: http://argocd.example.com
 
   # GitLab SSO 를 쓰지 않는 경우, 로컬 계정으로 CI 전용 사용자 생성
   accounts.cicd: apiKey, login
@@ -29,7 +30,7 @@ data:
   # ---------------------------------------------------------------
   # GitLab SSO (선택). GitLab 은 OIDC/OAuth2 IdP 를 자체 제공하므로 Dex 의
   # gitlab 커넥터를 그대로 쓴다. GitLab 의 Admin Area > Applications 에서
-  # redirect URI 를 https://argocd.example.com/api/dex/callback 로 등록하고
+  # redirect URI 를 http://argocd.example.com/api/dex/callback 로 등록하고
   # scope 는 read_user, openid 를 준다. 사용 시 주석 해제.
   # ---------------------------------------------------------------
   # dex.config: |
@@ -38,7 +39,7 @@ data:
   #       id: gitlab
   #       name: GitLab
   #       config:
-  #         baseURL: https://gitlab.example.com
+  #         baseURL: http://gitlab.example.com
   #         clientID: $dex.gitlab.clientId
   #         clientSecret: $dex.gitlab.clientSecret
   #         groups:
