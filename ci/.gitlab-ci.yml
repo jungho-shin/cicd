@@ -72,7 +72,9 @@ docker-build-push:
     # 변경이 없으면 빈 커밋을 만들지 않고 그대로 끝낸다.
     - git diff --cached --quiet && exit 0
     # [skip ci] 로 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
-    - git commit -m "chore(${DEPLOY_ENV}): sample-app -> ${IMAGE_TAG} [skip ci]"
+    # 줄 전체를 작은따옴표로 감싼다. 커밋 메시지 안의 ": " 때문에 따옴표가 없으면
+    # YAML 이 이 줄을 문자열이 아닌 키/값 맵으로 읽는다.
+    - 'git commit -m "chore(${DEPLOY_ENV}): sample-app -> ${IMAGE_TAG} [skip ci]"'
     - git push origin HEAD:main
 
 # 배포가 끝날 때까지(Synced + Healthy) 파이프라인을 붙잡아 둔다.

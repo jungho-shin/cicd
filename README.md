@@ -1160,7 +1160,17 @@ docker rm -f sample-app-test
 2. **gitops 커밋용 토큰** — `my-group/gitops-manifests` > Settings > **Access tokens** > Add new token
    - Role: **Maintainer** — `main` 이 보호 브랜치라 Developer 로는 push 가 `pre-receive hook declined` 로 거부된다
    - Scopes: `write_repository`
-   - 발급 화면을 벗어나면 다시 볼 수 없다. WSL 에 `( umask 077; cat > ~/gitops-ci-token.txt )` 로 붙여 넣고 Ctrl-D.
+   - 발급 화면을 벗어나면 다시 볼 수 없다. 화면에 보이지 않게 받아 권한 600 파일로 저장한다.
+     `cat > 파일` 로 붙여 넣으면 값이 터미널에 그대로 찍히고, 확인하려고 `cat` 하면 한 번 더 노출된다.
+
+     ```bash
+     read -rsp 'gitops token: ' T; echo
+     [[ $T == glpat-* ]] && ( umask 077; printf '%s' "$T" > ~/gitops-ci-token.txt )
+     unset T
+     ls -l ~/gitops-ci-token.txt      # 크기만 확인. 내용은 출력하지 않는다
+     ```
+
+     값이 터미널·채팅·스크린샷에 한 번이라도 노출됐다면 **Revoke 후 재발급**한다.
 
 ### 6.3 CI/CD 변수 등록
 
@@ -1216,6 +1226,7 @@ prod 의 HPA 는 metrics-server 가 없으면 `<unknown>` 으로 표시되지만
 
 | 증상 | 원인 |
 |---|---|
+| `Unable to create pipeline` + 잡 0개 | `.gitlab-ci.yml` 문법. script 한 줄에 따옴표 없이 `: `(콜론+공백)가 들어가면 YAML 이 문자열이 아닌 맵으로 읽어 `script config should be a string ...` 가 난다 → 줄 전체를 `'...'` 로 감싼다. Build > Pipeline editor > Validate 로 미리 확인 |
 | 잡이 `pending` | 러너 Offline (2.4) 또는 태그 불일치 |
 | `build-test` 가 이미지 pull 실패 | Nexus docker-group 익명 pull (3.3) |
 | kaniko `UNAUTHORIZED` | `DOCKER_USER`/`DOCKER_PASSWORD`, 또는 변수가 Protected |

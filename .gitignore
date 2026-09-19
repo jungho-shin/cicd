@@ -3,3 +3,4 @@
 *-secret.local.yaml
 secrets/
 .env
+/.idea/*
