@@ -94,8 +94,16 @@ data:
       [runners.kubernetes]
         namespace = "gitlab"
         service_account = "gitlab-runner-job"
-        # .gitlab-ci.yml 에서 image: 를 지정하지 않은 잡의 기본 이미지
-        image = "alpine:3.20"
+        # .gitlab-ci.yml 에서 image: 를 지정하지 않은 잡의 기본 이미지.
+        # 잡 이미지와 마찬가지로 Nexus docker-group 으로 받는다(익명 pull, README 3.3).
+        image = "nexus-docker-group.example.com/library/alpine:3.22"
+        # 잡 파드의 helper 컨테이너(git clone·아티팩트 전송)를 어디서 받을지.
+        # 지정하지 않으면 러너가 registry.gitlab.com 에서 직접 받는데, 그게 노드가 외부
+        # DNS 를 타는 유일한 경로여서 DNS 가 흔들리면 모든 잡이 멈춘다(2026-09-20).
+        # 여기 쓴 호스트명은 노드의 containerd 가 localhost:30083 으로 바꿔치기하므로
+        # 이름 해석이 필요 없다(kind-config.yaml 의 containerdConfigPatches).
+        # 태그의 버전은 아래 러너 이미지와 반드시 같아야 한다 — 올릴 때 같이 올린다.
+        helper_image = "nexus-docker-group.example.com/gitlab/gitlab-runner-helper:x86_64-v17.11.0"
         privileged = false
         poll_timeout = 600
         cpu_request = "200m"

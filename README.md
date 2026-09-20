@@ -623,6 +623,14 @@ kubectl -n gitlab logs deploy/gitlab-runner --tail=20
 > - 토큰이 틀리면 로그에 `403 Forbidden` 이 반복된다. 2 를 다시 실행하고
 >   `kubectl -n gitlab rollout restart deploy/gitlab-runner` — 환경변수는 Pod 시작 때만 읽힌다.
 > - Pod 가 `CreateContainerConfigError` 면 2 의 Secret 이 없는 것이다.
+> - **잡 파드의 이미지는 Nexus(3장)를 거친다.** `config.toml` 의 `image` 와 `helper_image` 가
+>   `nexus-docker-group.example.com/...` 을 가리킨다. 러너 자체는 Nexus 없이도 Online 이 되지만,
+>   **잡은 3장을 끝낸 뒤에야 돈다.** 여기서 먼저 잡을 돌려 보고 싶으면 두 줄을 각각
+>   `alpine:3.22`, `registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.11.0`
+>   으로 되돌리면 된다(외부 인터넷 필요).
+> - **러너 버전을 올릴 때는 `helper_image` 태그도 같이 올린다.** 본체(`gitlab/gitlab-runner:v17.11.0`)와
+>   helper 의 버전이 어긋나면 잡이 실패한다. helper 는 `.gitlab-ci.yml` 에 안 보이는 숨은 컨테이너라
+>   `git clone` 단계에서 엉뚱하게 터진다.
 
 ### 2.5 토큰 발급
 
@@ -1245,9 +1253,19 @@ prod 의 HPA 는 metrics-server 가 없으면 `<unknown>` 으로 표시되지만
 | **CI 커밋** (기본) | GitLab CI 가 `kustomize edit set image` 후 gitops 리포지토리에 커밋. 이력이 git 에 남고 롤백이 쉽다. |
 | **Argo CD Image Updater** | `bootstrap/image-updater/` 적용. 레지스트리를 폴링해 새 태그를 write-back. CI 가 gitops 권한을 가질 필요가 없다. |
 
-두 방식을 동시에 쓰면 커밋이 충돌하므로 하나만 선택한다.
-Image Updater 를 쓸 경우 `apps/sample-app.yaml` 의 `argocd-image-updater.argoproj.io/*` 어노테이션을 유지하고,
-그렇지 않으면 제거한다.
+두 방식을 동시에 쓰면 커밋이 충돌하므로 하나만 선택한다. **이 리포지토리는 CI 커밋 방식**이므로
+`apps/sample-app.yaml` 에 image-updater 어노테이션이 없다. Image Updater 로 바꾸려면
+`bootstrap/image-updater/` 를 적용하고 `sample-app-dev` 의 `annotations` 에 아래를 되돌린다.
+
+```yaml
+    argocd-image-updater.argoproj.io/image-list: app=nexus-docker.example.com/my-group/sample-app
+    argocd-image-updater.argoproj.io/app.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/app.allow-tags: regexp:^dev-[0-9a-f]{7}$
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/git-branch: main
+```
+
+이때 `.gitlab-ci.yml` 의 `update-gitops` 잡과 CI 변수 `GITOPS_TOKEN` 은 필요 없어진다.
 
 ## 운영 관련 메모
 
