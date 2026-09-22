@@ -4,29 +4,23 @@
 # 이 ConfigMap 을 수정한 뒤에는 컨트롤러를 재시작하거나
 # "Manage Jenkins > Configuration as Code > Reload existing configuration" 을 실행한다.
 # ---------------------------------------------------------------------------
-apiVersion: v1
-kind: Secret
-metadata:
-  name: jenkins-secrets
-  namespace: jenkins
-type: Opaque
-stringData:
-  # 값은 반드시 작은따옴표로 감싼다. 감싸지 않으면 ':' '@' '{' '*' '#' 같은
-  # 문자가 들어간 비밀번호/토큰이 YAML 파싱 에러를 일으킨다.
-  # 값 안에 작은따옴표가 있으면 '' 로 두 번 쓴다. (예: 'ab''cd')
-  JENKINS_ADMIN_ID: 'admin'
-  # 운영에서는 kubectl create secret / SealedSecrets 로 대체할 것
-  JENKINS_ADMIN_PASSWORD: 'admin123'
-
-  # gitops 리포지토리에 이미지 태그를 커밋할 계정
-  #   GitLab → Project/Group access token (write_repository)
-  #   USER 에는 토큰 이름을, TOKEN 에는 토큰 값을 넣는다.
-  GITOPS_USER: 'taos9938@gmail.com'
-  GITOPS_TOKEN: '__REPLACE_ME__'
-
-  # argocd account generate-token --account cicd
-  ARGOCD_AUTH_TOKEN: '__REPLACE_ME__'
----
+#
+# `jenkins-secrets` Secret 은 이 파일에 두지 않는다. GitLab root 비밀번호(2.2)·
+# 러너 토큰(2.4)·Argo CD 시크릿(4.2) 과 같은 이유다 — 이 리포지토리는 공개이고
+# 매니페스트에 값을 적으면 git 기록에 영구히 남는다.
+#
+# README 부록 "설치" 의 `kubectl create secret` 으로 먼저 만든다. 키 5개:
+#   JENKINS_ADMIN_ID        관리자 계정 (예: admin)
+#   JENKINS_ADMIN_PASSWORD  관리자 비밀번호
+#   GITOPS_USER             gitops push 계정 — GitLab Project access token 의 *이름*
+#   GITOPS_TOKEN            그 토큰 값 (write_repository)
+#   ARGOCD_AUTH_TOKEN       argocd account generate-token --account cicd
+#   NEXUS_USER              Nexus docker-hosted push 계정
+#   NEXUS_PASSWORD          그 비밀번호
+#
+# 아래 JCasC 의 ${JENKINS_ADMIN_PASSWORD} 등이 이 Secret 값으로 치환된다
+# (jenkins.yaml 의 envFrom.secretRef).
+# ---------------------------------------------------------------------------
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -90,23 +84,30 @@ data:
                 containers:
                   # 도커 데몬 없이 이미지를 빌드/푸시한다(DinD 특권 컨테이너 불필요)
                   - name: "kaniko"
-                    image: "gcr.io/kaniko-project/executor:v1.23.2-debug"
+                    # Nexus gcr-proxy 경유. 부록 "사전 조건" 에서 프록시를 먼저 만든다
+                    image: "nexus-docker-group.example.com/kaniko-project/executor:v1.23.2-debug"
                     command: "/busybox/cat"
                     ttyEnabled: true
                   # kubectl / kustomize / git / helm 포함
                   - name: "tools"
-                    image: "alpine/k8s:1.30.2"
+                    image: "nexus-docker-group.example.com/alpine/k8s:1.30.2"
                     command: "cat"
                     ttyEnabled: true
-                # 레지스트리 푸시용 docker config.
-                # 먼저 시크릿을 만든 뒤 아래 주석을 해제한다:
-                #   kubectl -n jenkins create secret docker-registry regcred \
-                #     --docker-server=my-registry.example.com \
-                #     --docker-username='<user>' --docker-password='<password>'
-                # volumes:
-                #   - secretVolume:
-                #       secretName: "regcred"
-                #       mountPath: "/kaniko/.docker"
+                  # npm ci / npm test / npm run build
+                  - name: "node"
+                    image: "nexus-docker-group.example.com/library/node:22-alpine"
+                    command: "cat"
+                    ttyEnabled: true
+                  # argocd CLI. 서버(bootstrap/argocd/kustomization.yaml)와 같은 태그.
+                  # 공식 이미지는 quay.io 에 있다 → Nexus quay-proxy 경유
+                  - name: "argocd"
+                    image: "nexus-docker-group.example.com/argoproj/argocd:v3.5.2"
+                    command: "cat"
+                    ttyEnabled: true
+                # kaniko 의 /kaniko/.docker/config.json 은 Jenkinsfile 이
+                # `nexus-registry` 자격증명으로 직접 만든다. docker-registry 타입
+                # Secret 을 secretVolume 으로 붙이면 파일 이름이 `.dockerconfigjson`
+                # 이 되어 kaniko 가 찾지 못한다.
 
     credentials:
       system:
@@ -123,6 +124,12 @@ data:
                   id: "argocd-auth-token"
                   description: "argocd app sync 용 API 토큰"
                   secret: "${ARGOCD_AUTH_TOKEN}"
+              - usernamePassword:
+                  scope: GLOBAL
+                  id: "nexus-registry"
+                  description: "Nexus docker-hosted push 용 (kaniko)"
+                  username: "${NEXUS_USER}"
+                  password: "${NEXUS_PASSWORD}"
 
     unclassified:
       location:
