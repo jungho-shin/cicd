@@ -371,8 +371,10 @@ kubectl -n ingress-nginx get svc ingress-nginx-controller   # 위 IP 와 같아�
   (`tar czf backup.tar.gz -C / data`). `extraMounts` 가 없는 노드에서는 `/data`
   가 노드 컨테이너 안의 경로일 뿐이고 `kind delete cluster` 와 함께 사라진다.
 - **WSL 을 종료하면 노드 컨테이너도 멈춘다.** kind 노드의 재시작 정책은
-  `on-failure:1`(실패 시 1회 재시도)이라 `wsl --shutdown` 이나 docker 재기동
-  이후에는 자동으로 뜨지 않는다. 다시 켤 때는 docker 가 올라온 뒤 한 번 시작해 준다.
+  `on-failure:1`(실패 시 1회 재시도)이다. `wsl --shutdown` 처럼 데몬째 죽으면 컨테이너도
+  비정상 종료로 끝나므로 docker 가 다시 뜰 때 한 번은 같이 올라오지만, 재시도 1회를 이미
+  쓴 컨테이너는 그대로 `Exited` 로 남는다. **올라온다는 보장이 없으니** docker 기동 후
+  상태를 보고 필요하면 직접 시작해 준다.
 
   ```bash
   # 먼저 상태 확인 — 일부만 Exited 인 경우가 흔하다
