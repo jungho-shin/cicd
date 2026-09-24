@@ -1,6 +1,6 @@
 // ===========================================================================
-// 애플리케이션 리포지토리(gitlab.example.com/my-group/sample-app)의 루트에
-// `Jenkinsfile` 이름으로 배치한다. 앱 템플릿은 이 리포지토리의 sample-app/ (React + nginx).
+// 애플리케이션 리포지토리(gitlab.example.com/my-group/react-app)의 루트에
+// `Jenkinsfile` 이름으로 배치한다. 앱 템플릿은 이 리포지토리의 samples/react-app/ (React + nginx).
 //
 // 흐름: 테스트/빌드(node) → 이미지 빌드&푸시(kaniko) → gitops 리포지토리 태그 갱신 커밋
 //       → Argo CD 가 감지하여 배포 → 배포 완료까지 대기
@@ -31,7 +31,7 @@ pipeline {
   environment {
     // 평문 HTTP 레지스트리. 노드 containerd 는 이 이름을 localhost:30082 로 보낸다
     REGISTRY      = 'nexus-docker.example.com'
-    IMAGE         = "${REGISTRY}/my-group/sample-app"
+    IMAGE         = "${REGISTRY}/my-group/react-app"
     // 스킴 없이 적는다. 아래에서 http:// 를 붙인다
     GITOPS_REPO   = 'gitlab.example.com/my-group/gitops-manifests.git'
     // 평문 Ingress. 포트를 생략하면 443 으로 붙을 수 있다
@@ -133,9 +133,9 @@ pipeline {
               git config --global user.name "jenkins-ci"
               git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
 
-              cd gitops/manifests/sample-app/overlays/${DEPLOY_ENV}
+              cd gitops/manifests/react-app/overlays/${DEPLOY_ENV}
               # 왼쪽은 overlay 의 images[].name (고정 이름), 오른쪽이 새 이미지다.
-              kustomize edit set image "nexus-docker.example.com/my-group/sample-app=${IMAGE}:${IMAGE_TAG}"
+              kustomize edit set image "nexus-docker.example.com/my-group/react-app=${IMAGE}:${IMAGE_TAG}"
 
               cd "$WORKSPACE/gitops"
               git add -A
@@ -144,7 +144,7 @@ pipeline {
                 echo "변경 없음 - 커밋 생략"
                 exit 0
               fi
-              git commit -m "chore(${DEPLOY_ENV}): sample-app -> ${IMAGE_TAG}"
+              git commit -m "chore(${DEPLOY_ENV}): react-app -> ${IMAGE_TAG}"
               git push origin HEAD:main
             '''
           }
@@ -161,7 +161,7 @@ pipeline {
               set -eu
               # Argo CD Ingress 가 평문(HTTP)이므로 --plaintext 가 필요하다.
               OPTS="--grpc-web --plaintext --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
-              APP="sample-app-${DEPLOY_ENV}"
+              APP="react-app-${DEPLOY_ENV}"
 
               # 방금 커밋을 바로 보게 한다(webhook 이 먼저 했어도 무해)
               argocd app get "$APP" --refresh $OPTS > /dev/null
@@ -184,8 +184,8 @@ pipeline {
     success {
       script {
         if (env.DEPLOY_ENV) {
-          def url = (env.DEPLOY_ENV == 'dev') ? 'http://sample-app.dev.example.com'
-                                              : 'http://sample-app.example.com'
+          def url = (env.DEPLOY_ENV == 'dev') ? 'http://react-app.dev.example.com'
+                                              : 'http://react-app.example.com'
           echo "배포 완료: ${env.DEPLOY_ENV} → ${url} (version: ${env.IMAGE_TAG})"
         }
       }

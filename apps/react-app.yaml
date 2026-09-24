@@ -1,10 +1,10 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: sample-app-dev
+  name: react-app-dev
   namespace: argocd
   annotations:
-    repo: sample-app          # notifications 템플릿에서 사용
+    repo: react-app          # notifications 템플릿에서 사용
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -12,10 +12,10 @@ spec:
   source:
     repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
     targetRevision: main
-    path: manifests/sample-app/overlays/dev
+    path: manifests/react-app/overlays/dev
   destination:
     server: https://kubernetes.default.svc
-    namespace: sample-app-dev
+    namespace: react-app-dev
   syncPolicy:
     automated:
       prune: true
@@ -34,10 +34,10 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: sample-app-prod
+  name: react-app-prod
   namespace: argocd
   annotations:
-    repo: sample-app
+    repo: react-app
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -45,10 +45,10 @@ spec:
   source:
     repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
     targetRevision: main
-    path: manifests/sample-app/overlays/prod
+    path: manifests/react-app/overlays/prod
   destination:
     server: https://kubernetes.default.svc
-    namespace: sample-app-prod
+    namespace: react-app-prod
   syncPolicy:
     # 운영은 수동 승인 배포. 자동화하려면 automated 블록을 추가한다.
     syncOptions:

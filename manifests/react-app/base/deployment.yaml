@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: sample-app
+  name: react-app
 spec:
   replicas: 2
   revisionHistoryLimit: 5
   selector:
     matchLabels:
-      app: sample-app
+      app: react-app
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -16,9 +16,9 @@ spec:
   template:
     metadata:
       labels:
-        app: sample-app
+        app: react-app
     spec:
-      serviceAccountName: sample-app
+      serviceAccountName: react-app
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -26,7 +26,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: nexus-docker.example.com/my-group/sample-app:latest
+          image: nexus-docker.example.com/my-group/react-app:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

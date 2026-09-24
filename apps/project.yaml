@@ -13,7 +13,7 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: 'dev-*'
     - server: https://kubernetes.default.svc
-      namespace: sample-app-dev
+      namespace: react-app-dev
     - server: https://kubernetes.default.svc
       namespace: python-api-dev
   clusterResourceWhitelist:
@@ -46,7 +46,7 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: 'prod-*'
     - server: https://kubernetes.default.svc
-      namespace: sample-app-prod
+      namespace: react-app-prod
     - server: https://kubernetes.default.svc
       namespace: python-api-prod
   clusterResourceWhitelist:

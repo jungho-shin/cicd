@@ -19,7 +19,7 @@ FROM ${REGISTRY}/nginxinc/nginx-unprivileged:1.28-alpine
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY docker-entrypoint.sh /app-entrypoint.sh
 COPY --from=build /app/dist /usr/share/nginx/html
-# manifests/sample-app/base/deployment.yaml 의 runAsUser 와 맞춘다
+# manifests/react-app/base/deployment.yaml 의 runAsUser 와 맞춘다
 USER 10001
 EXPOSE 8080
 # sh 로 실행해 파일 실행 권한(Windows 에서 편집하면 사라진다)에 기대지 않는다

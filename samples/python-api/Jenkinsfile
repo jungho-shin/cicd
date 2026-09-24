@@ -1,6 +1,6 @@
 // ===========================================================================
 // python-api 리포지토리(gitlab.example.com/my-group/python-api)의 루트에 둔다.
-// ci/Jenkinsfile(sample-app)과 흐름이 같고, 다른 점은 두 가지다.
+// ci/Jenkinsfile(react-app)과 흐름이 같고, 다른 점은 두 가지다.
 //   - 앱 이름을 APP_NAME 한 곳에서 정한다 (이미지·overlay 경로·Argo CD 앱 이름이 여기서 파생된다)
 //   - 테스트 단계가 node 대신 python 컨테이너에서 pytest 를 돈다
 //

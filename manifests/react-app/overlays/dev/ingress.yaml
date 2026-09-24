@@ -1,20 +1,20 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: sample-app
+  name: react-app
   # 평문(HTTP) 전제. cert-manager 가 없어 TLS 시크릿이 생기지 않으므로 tls: 블록을 두지 않는다.
   # 두면 ingress-nginx 가 http → https 로 리다이렉트하고 https 는 가짜 인증서로 응답한다.
   # (bootstrap/argocd/ingress.yaml 과 같은 이유)
 spec:
   ingressClassName: nginx
   rules:
-    - host: sample-app.example.com
+    - host: react-app.dev.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: prod-sample-app
+                name: dev-react-app
                 port:
                   name: http

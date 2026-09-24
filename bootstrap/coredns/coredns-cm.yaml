@@ -26,8 +26,8 @@
 #   argocd.example.com              Argo CD UI
 #   grpc.argocd.example.com         Argo CD native gRPC (TLS 구성용. 평문에서는 argocd.example.com 사용)
 #   jenkins.example.com             Jenkins (README 5장)
-#   sample-app.dev.example.com      샘플 앱 dev
-#   sample-app.example.com          샘플 앱 prod
+#   react-app.dev.example.com       샘플 앱 dev
+#   react-app.example.com           샘플 앱 prod
 #
 # 주의
 #   - CoreDNS 의 플러그인 실행 순서는 Corefile 에 쓴 순서가 아니라 컴파일 시점의
@@ -72,8 +72,8 @@ data:
         rewrite name argocd.example.com             ingress-nginx-controller.ingress-nginx.svc.cluster.local
         rewrite name grpc.argocd.example.com        ingress-nginx-controller.ingress-nginx.svc.cluster.local
         rewrite name jenkins.example.com            ingress-nginx-controller.ingress-nginx.svc.cluster.local
-        rewrite name sample-app.dev.example.com     ingress-nginx-controller.ingress-nginx.svc.cluster.local
-        rewrite name sample-app.example.com         ingress-nginx-controller.ingress-nginx.svc.cluster.local
+        rewrite name react-app.dev.example.com      ingress-nginx-controller.ingress-nginx.svc.cluster.local
+        rewrite name react-app.example.com          ingress-nginx-controller.ingress-nginx.svc.cluster.local
         # ----------------------------------------------------------------
         kubernetes cluster.local in-addr.arpa ip6.arpa {
            pods insecure

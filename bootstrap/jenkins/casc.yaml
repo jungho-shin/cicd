@@ -99,7 +99,7 @@ data:
                     image: "nexus-docker-group.example.com/library/node:22-alpine"
                     command: "cat"
                     ttyEnabled: true
-                  # python-api 의 pytest. 이미지 안 python 버전과 맞춘다(python-api/Dockerfile)
+                  # python-api 의 pytest. 이미지 안 python 버전과 맞춘다(samples/python-api/Dockerfile)
                   - name: "python"
                     image: "nexus-docker-group.example.com/library/python:3.12-slim"
                     command: "cat"
@@ -152,11 +152,11 @@ data:
     # 앱 리포지토리 루트의 Jenkinsfile 을 브랜치별로 자동 인식한다.
     # jobs:
     #   - script: >
-    #       multibranchPipelineJob('sample-app') {
+    #       multibranchPipelineJob('react-app') {
     #         branchSources {
     #           git {
-    #             id('sample-app')
-    #             remote('http://gitlab.gitlab.svc.cluster.local/my-group/sample-app.git')
+    #             id('react-app')
+    #             remote('http://gitlab.gitlab.svc.cluster.local/my-group/react-app.git')
     #             credentialsId('gitops-repo')
     #           }
     #         }

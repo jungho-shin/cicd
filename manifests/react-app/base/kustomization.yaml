@@ -9,9 +9,9 @@ resources:
 labels:
   - includeSelectors: false
     pairs:
-      app.kubernetes.io/name: sample-app
+      app.kubernetes.io/name: react-app
       app.kubernetes.io/managed-by: argocd
 
 images:
-  - name: nexus-docker.example.com/my-group/sample-app
+  - name: nexus-docker.example.com/my-group/react-app
     newTag: latest

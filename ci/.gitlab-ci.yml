@@ -1,6 +1,6 @@
 # ===========================================================================
-# 애플리케이션 리포지토리(gitlab.example.com/my-group/sample-app)의 루트에
-# `.gitlab-ci.yml` 이름으로 배치한다. 앱 템플릿은 이 리포지토리의 sample-app/ (React + nginx).
+# 애플리케이션 리포지토리(gitlab.example.com/my-group/react-app)의 루트에
+# `.gitlab-ci.yml` 이름으로 배치한다. 앱 템플릿은 이 리포지토리의 samples/react-app/ (React + nginx).
 #
 # 흐름: 테스트/빌드(node) → 이미지 빌드&푸시(kaniko) → gitops 리포지토리 태그 갱신 커밋
 #       → Argo CD 가 감지하여 배포 → 배포 완료까지 대기
@@ -22,7 +22,7 @@
 stages: [test, build, deploy, verify]
 
 variables:
-  IMAGE: ${DOCKER_REGISTRY}/my-group/sample-app
+  IMAGE: ${DOCKER_REGISTRY}/my-group/react-app
   IMAGE_TAG: ${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}
   HUB: nexus-docker-group.example.com
 
@@ -64,9 +64,9 @@ docker-build-push:
     - git config --global user.email "ci@example.com"
     - git config --global user.name "gitlab-ci"
     - git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
-    - cd gitops/manifests/sample-app/overlays/${DEPLOY_ENV}
+    - cd gitops/manifests/react-app/overlays/${DEPLOY_ENV}
     # 왼쪽은 overlay 의 images[].name (고정 이름), 오른쪽이 새 이미지다.
-    - kustomize edit set image "nexus-docker.example.com/my-group/sample-app=${IMAGE}:${IMAGE_TAG}"
+    - kustomize edit set image "nexus-docker.example.com/my-group/react-app=${IMAGE}:${IMAGE_TAG}"
     - cd $CI_PROJECT_DIR/gitops
     - git add -A
     # 변경이 없으면 빈 커밋을 만들지 않고 그대로 끝낸다.
@@ -74,7 +74,7 @@ docker-build-push:
     # [skip ci] 로 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
     # 줄 전체를 작은따옴표로 감싼다. 커밋 메시지 안의 ": " 때문에 따옴표가 없으면
     # YAML 이 이 줄을 문자열이 아닌 키/값 맵으로 읽는다.
-    - 'git commit -m "chore(${DEPLOY_ENV}): sample-app -> ${IMAGE_TAG} [skip ci]"'
+    - 'git commit -m "chore(${DEPLOY_ENV}): react-app -> ${IMAGE_TAG} [skip ci]"'
     - git push origin HEAD:main
 
 # 배포가 끝날 때까지(Synced + Healthy) 파이프라인을 붙잡아 둔다.
@@ -88,11 +88,11 @@ docker-build-push:
     # Argo CD Ingress 가 평문(HTTP)이므로 --plaintext 가 필요하다.
     - OPTS="--grpc-web --plaintext --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
     # 방금 커밋을 바로 보게 한다(webhook 이 먼저 했어도 무해)
-    - argocd app get "sample-app-${DEPLOY_ENV}" --refresh $OPTS > /dev/null
+    - argocd app get "react-app-${DEPLOY_ENV}" --refresh $OPTS > /dev/null
     # dev 는 자동 동기화라 CLI 가 sync 를 또 걸면 "another operation is already in progress" 로
     # 실패할 수 있다. 수동 동기화 대상(prod)만 sync 한다.
-    - if [ "$ARGOCD_SYNC" = "true" ]; then argocd app sync "sample-app-${DEPLOY_ENV}" $OPTS; fi
-    - argocd app wait "sample-app-${DEPLOY_ENV}" --sync --health --timeout 600 $OPTS
+    - if [ "$ARGOCD_SYNC" = "true" ]; then argocd app sync "react-app-${DEPLOY_ENV}" $OPTS; fi
+    - argocd app wait "react-app-${DEPLOY_ENV}" --sync --health --timeout 600 $OPTS
 
 deploy-dev:
   extends: .update-gitops
@@ -100,7 +100,7 @@ deploy-dev:
     DEPLOY_ENV: dev
   environment:
     name: dev
-    url: http://sample-app.dev.example.com
+    url: http://react-app.dev.example.com
   rules:
     - if: $CI_COMMIT_BRANCH == "develop"
 
@@ -120,7 +120,7 @@ deploy-prod:
     DEPLOY_ENV: prod
   environment:
     name: production
-    url: http://sample-app.example.com
+    url: http://react-app.example.com
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual

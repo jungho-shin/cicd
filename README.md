@@ -5,7 +5,7 @@ GitLab 이 **git 호스트**를, Jenkins 가 **CI**(빌드·테스트·이미지
 매니페스트 리포지토리를 분리한다.
 
 ```
-[app repo]  gitlab.example.com/my-group/sample-app   (루트에 Jenkinsfile)
+[app repo]  gitlab.example.com/my-group/react-app   (루트에 Jenkinsfile)
      │  Jenkins Multibranch: npm test/build → kaniko push(Nexus) → kustomize edit set image
      ▼
 [gitops repo] gitlab.example.com/my-group/gitops-manifests   ← 이 리포지토리의 apps/, manifests/
@@ -62,11 +62,11 @@ bootstrap/
 apps/
   project.yaml                AppProject: dev / prod
   app-of-apps.yaml            부트스트랩 Application (이것만 apply)
-  sample-app.yaml             sample-app dev/prod Application
+  react-app.yaml              react-app dev/prod Application
   python-api.yaml             python-api dev/prod Application (8장)
   applicationset-gitlab.yaml  (선택) 그룹 리포지토리 자동 등록
 
-manifests/sample-app/
+manifests/react-app/
   base/                       Deployment / Service / ServiceAccount
   overlays/dev/               replicas 1, dev 호스트, develop-<sha> 태그
   overlays/prod/              replicas 3, HPA, PDB, 수동 배포
@@ -75,18 +75,19 @@ manifests/python-api/         두 번째 앱 (8장). replicas 1, HPA·PDB 없음
 ci/Jenkinsfile                앱 리포지토리 루트에 복사해서 사용 (7장)
 ci/.gitlab-ci.yml             (부록) GitLab CI 로 돌릴 때 대신 사용 — 둘 중 하나만
 
-sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx 로 서빙) — 7장
-  src/                        App.jsx, main.jsx, App.test.jsx
-  public/config.js            로컬 개발용 런타임 설정 (컨테이너에서는 /tmp/config.js 로 대체)
-  Dockerfile                  node 빌드 → nginx-unprivileged, UID 10001
-  nginx.conf                  8080, /healthz, 읽기 전용 루트 대응(쓰기 경로는 /tmp)
-  docker-entrypoint.sh        APP_ENV 로 /tmp/config.js 생성 후 nginx 기동
+samples/                      배포 테스트용 샘플 앱 (각각 별도 앱 리포지토리로 복사해서 사용)
+  react-app/                  앱 리포지토리 템플릿 (React + Vite, nginx 로 서빙) — 7장
+    src/                      App.jsx, main.jsx, App.test.jsx
+    public/config.js          로컬 개발용 런타임 설정 (컨테이너에서는 /tmp/config.js 로 대체)
+    Dockerfile                node 빌드 → nginx-unprivileged, UID 10001
+    nginx.conf                8080, /healthz, 읽기 전용 루트 대응(쓰기 경로는 /tmp)
+    docker-entrypoint.sh      APP_ENV 로 /tmp/config.js 생성 후 nginx 기동
 
-python-api/                   두 번째 앱 템플릿 (FastAPI, 메모리 CRUD) — 8장
-  app/main.py                 /, /healthz, /items CRUD
-  tests/test_main.py          pytest
-  Dockerfile                  python:3.12-slim + uvicorn, UID 10001
-  Jenkinsfile                 ci/Jenkinsfile 과 같은 흐름, APP_NAME 으로 앱 이름 지정, pytest
+  python-api/                 두 번째 앱 템플릿 (FastAPI, 메모리 CRUD) — 8장
+    app/main.py               /, /healthz, /items CRUD
+    tests/test_main.py        pytest
+    Dockerfile                python:3.12-slim + uvicorn, UID 10001
+    Jenkinsfile               ci/Jenkinsfile 과 같은 흐름, APP_NAME 으로 앱 이름 지정, pytest
 ```
 
 ## 설치 순서
@@ -135,7 +136,7 @@ Windows hosts 파일(1.5), 클러스터 안에서는 CoreDNS rewrite(1.6)로 같
 | `argocd.example.com` | Argo CD UI·CLI (`:80`, 4.3). `grpc.argocd.example.com` 은 TLS 구성용 |
 | `jenkins.example.com` | Jenkins UI (5장) |
 | `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리(이미지 주소) |
-| `sample-app.example.com` / `sample-app.dev.example.com` | 서비스 호스트 (7장) |
+| `react-app.example.com` / `react-app.dev.example.com` | 서비스 호스트 (7장) |
 | `python-api.example.com` / `python-api.dev.example.com` | 서비스 호스트 (8장) |
 
 ## 1. 클러스터 준비 (kind on WSL2)
@@ -288,8 +289,8 @@ control-plane 이 아닌 노드에 떠 있는 것이고, `404` 면 Host 헤더�
 127.0.0.1  gitlab.example.com
 127.0.0.1  argocd.example.com
 127.0.0.1  grpc.argocd.example.com
-127.0.0.1  sample-app.dev.example.com
-127.0.0.1  sample-app.example.com
+127.0.0.1  react-app.dev.example.com
+127.0.0.1  react-app.example.com
 127.0.0.1  python-api.dev.example.com
 127.0.0.1  python-api.example.com
 ```
@@ -868,7 +869,7 @@ systemctl restart containerd
 ```bash
 # 비밀번호가 셸 기록에 남지 않게 read 로 받는다. create ... | apply 형태라 다시 실행해도 된다
 read -rp 'nexus user: ' NX_USER; read -rsp 'nexus password: ' NX_PASS; echo
-for ns in sample-app-dev sample-app-prod; do
+for ns in react-app-dev react-app-prod; do
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "$ns" create secret docker-registry regcred \
     --docker-server=nexus-docker.example.com \
@@ -876,10 +877,10 @@ for ns in sample-app-dev sample-app-prod; do
     --dry-run=client -o yaml | kubectl apply -f -
 done
 unset NX_USER NX_PASS
-kubectl get secret regcred -n sample-app-dev; kubectl get secret regcred -n sample-app-prod
+kubectl get secret regcred -n react-app-dev; kubectl get secret regcred -n react-app-prod
 ```
 
-`manifests/sample-app/base/deployment.yaml` 에는 `imagePullSecrets: [{name: regcred}]` 가
+`manifests/react-app/base/deployment.yaml` 에는 `imagePullSecrets: [{name: regcred}]` 가
 이미 들어 있다. 시크릿 이름만 `regcred` 로 맞추면 된다. docker-group 만 익명 pull 을 허용하므로(3.3)
 docker-hosted 의 앱 이미지는 이 시크릿이 없으면 `ImagePullBackOff` 가 난다.
 
@@ -974,7 +975,7 @@ kubectl -n argocd create secret generic repo-gitlab-https \
 kubectl -n argocd label secret repo-gitlab-https argocd.argoproj.io/secret-type=repository
 
 # 레지스트리 pull secret (앱 네임스페이스마다 필요)
-kubectl -n sample-app-dev create secret docker-registry regcred \
+kubectl -n react-app-dev create secret docker-registry regcred \
   --docker-server=nexus-docker.example.com \
   --docker-username='<user>' --docker-password='<password>'
 ```
@@ -1100,8 +1101,8 @@ argocd app list --grpc-web
 | Application | SYNC | HEALTH | 이유 |
 |---|---|---|---|
 | `bootstrap` | Synced | Healthy | |
-| `sample-app-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 7장에서 Jenkins 가 첫 태그를 커밋하면 풀린다 |
-| `sample-app-prod` | OutOfSync | Missing | 수동 동기화 대상(`automated` 없음) |
+| `react-app-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 7장에서 Jenkins 가 첫 태그를 커밋하면 풀린다 |
+| `react-app-prod` | OutOfSync | Missing | 수동 동기화 대상(`automated` 없음) |
 
 - `apps/applicationset-gitlab.yaml` 은 `app-of-apps.yaml` 의 `exclude` 로 **기본 제외**된다.
   같은 파일의 placeholder Secret 이 selfHeal 로 실제 토큰을 덮어쓰기 때문이다.
@@ -1287,7 +1288,7 @@ webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
 
 ## 7. 앱 리포지토리에 파이프라인 배치
 
-`sample-app/`(React 템플릿)과 `ci/Jenkinsfile` 을 GitLab 의 `my-group/sample-app` 리포지토리
+`samples/react-app/`(React 템플릿)과 `ci/Jenkinsfile` 을 GitLab 의 `my-group/react-app` 리포지토리
 루트에 올리고, Jenkins 에 Multibranch Pipeline 으로 등록한다. `develop` 은 dev 로 자동 배포,
 `main` 은 Jenkins 에서 승인한 뒤 prod 로 배포된다.
 
@@ -1302,7 +1303,7 @@ webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
 | `main` | `main-<sha 8자리>` | prod (`overlays/prod`), **승인 후** | 수동 동기화 — Jenkins 가 `argocd app sync` 를 건다 |
 | 그 외 | — | 테스트·빌드까지만 | — |
 
-앱은 정적 파일을 nginx 가 서빙한다. 매니페스트(`manifests/sample-app/base/deployment.yaml`)의 조건 —
+앱은 정적 파일을 nginx 가 서빙한다. 매니페스트(`manifests/react-app/base/deployment.yaml`)의 조건 —
 포트 8080, `/healthz`, UID 10001, **읽기 전용 루트 파일시스템** — 에 맞춰 `nginx.conf` 가 쓰기 경로를 전부
 `/tmp`(emptyDir)로 옮긴다. 화면에는 `environment`(Deployment 의 `APP_ENV`, 시작 시 `/tmp/config.js` 로 주입)와
 `version`(빌드 때 넣은 이미지 태그)이 보여서, 같은 이미지가 dev/prod 로 흘러가는 것을 눈으로 확인할 수 있다.
@@ -1313,9 +1314,9 @@ webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
 WSL 에 node 가 없어도 되도록 컨테이너로 돌린다.
 
 ```bash
-mkdir -p ~/workspace/sample-app && cd ~/workspace/sample-app
+mkdir -p ~/workspace/react-app && cd ~/workspace/react-app
 git init -b main
-cp -r ~/workspace/cicd/sample-app/. .
+cp -r ~/workspace/cicd/samples/react-app/. .
 cp ~/workspace/cicd/ci/Jenkinsfile .
 
 # package-lock.json 생성 + 테스트
@@ -1324,31 +1325,31 @@ docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/.npm -v "$PWD":/
 ls package-lock.json
 
 # 매니페스트와 같은 조건으로 실행해 본다(클러스터 밖이라 베이스 이미지는 Docker Hub 에서)
-docker build --build-arg REGISTRY=docker.io --build-arg APP_VERSION=local-test -t sample-app:local .
-docker run -d --name sample-app-test --read-only --tmpfs /tmp -u 10001 -e APP_ENV=local -p 8088:8080 sample-app:local
+docker build --build-arg REGISTRY=docker.io --build-arg APP_VERSION=local-test -t react-app:local .
+docker run -d --name react-app-test --read-only --tmpfs /tmp -u 10001 -e APP_ENV=local -p 8088:8080 react-app:local
 curl -s localhost:8088/healthz            # ok
 curl -s localhost:8088/config.js          # window.APP_CONFIG = { env: "local" }
-docker logs sample-app-test | tail -5     # Read-only file system 오류가 없어야 한다
-docker rm -f sample-app-test
+docker logs react-app-test | tail -5     # Read-only file system 오류가 없어야 한다
+docker rm -f react-app-test
 ```
 
 ### 7.2 GitLab 프로젝트 만들고 push
 
-`my-group` 에 `sample-app` 프로젝트를 만든다(Private, *Initialize repository with a README* 끔).
+`my-group` 에 `react-app` 프로젝트를 만든다(Private, *Initialize repository with a README* 끔).
 두 프로젝트가 모두 생겼으니 2.4 의 그룹 토큰이 둘 다에 통하는지 확인한다.
 
 ```bash
 # 읽기(앱 리포지토리)·쓰기(gitops) 둘 다 200 이어야 한다
 curl -s -o /dev/null -w 'read  %{http_code}\n' -u "ci-bot:$(tr -d '\n' < ~/gitlab-group-token.txt)" \
-  'http://gitlab.example.com/my-group/sample-app.git/info/refs?service=git-upload-pack'
+  'http://gitlab.example.com/my-group/react-app.git/info/refs?service=git-upload-pack'
 curl -s -o /dev/null -w 'write %{http_code}\n' -u "ci-bot:$(tr -d '\n' < ~/gitlab-group-token.txt)" \
   'http://gitlab.example.com/my-group/gitops-manifests.git/info/refs?service=git-receive-pack'
 ```
 
 ```bash
-cd ~/workspace/sample-app
-git add . && git commit -m "initial: sample-app"
-git remote add origin http://gitlab.example.com/my-group/sample-app.git
+cd ~/workspace/react-app
+git add . && git commit -m "initial: react-app"
+git remote add origin http://gitlab.example.com/my-group/react-app.git
 git push -u origin main
 git push origin main:develop
 ```
@@ -1357,10 +1358,10 @@ git push origin main:develop
 
 ### 7.3 Jenkins 잡 등록
 
-Jenkins UI > **새로운 Item** > 이름 `sample-app` > **Multibranch Pipeline**.
+Jenkins UI > **새로운 Item** > 이름 `react-app` > **Multibranch Pipeline**.
 
 - **Branch Sources > Add source > Git**
-  - Project Repository: `http://gitlab.gitlab.svc.cluster.local/my-group/sample-app.git`
+  - Project Repository: `http://gitlab.gitlab.svc.cluster.local/my-group/react-app.git`
   - Credentials: `ci-bot/****** (gitops 매니페스트 리포지토리 push 용)` — 이것이 `gitops-repo` 다.
     드롭다운에는 ID 가 아니라 `사용자명/****** (설명)` 으로 보인다. `argocd-auth-token` 은
     Secret text 라 이 칸에 나오지 않는 게 정상이다.
@@ -1378,19 +1379,19 @@ Save 하면 바로 브랜치 스캔이 돌고, `Jenkinsfile` 이 있는 `main` �
 
 ### 7.4 dev 배포 확인
 
-Jenkins 의 `sample-app » develop` 빌드에서 모든 단계가 초록이면 된다. 첫 실행은 에이전트 이미지
+Jenkins 의 `react-app » develop` 빌드에서 모든 단계가 초록이면 된다. 첫 실행은 에이전트 이미지
 pull 과 `npm ci` 로 수 분 걸린다. 콘솔 로그 마지막 줄에
-`배포 완료: dev → http://sample-app.dev.example.com (version: develop-xxxxxxxx)` 가 찍힌다.
+`배포 완료: dev → http://react-app.dev.example.com (version: develop-xxxxxxxx)` 가 찍힌다.
 
 ```bash
-argocd app get sample-app-dev --grpc-web | grep -E 'Sync Status|Health Status'   # Synced / Healthy
-kubectl -n sample-app-dev get pods                     # Deployment 이름은 dev-sample-app (namePrefix)
-curl -s http://sample-app.dev.example.com/healthz      # ok
+argocd app get react-app-dev --grpc-web | grep -E 'Sync Status|Health Status'   # Synced / Healthy
+kubectl -n react-app-dev get pods                     # Deployment 이름은 dev-react-app (namePrefix)
+curl -s http://react-app.dev.example.com/healthz      # ok
 ```
 
-브라우저에서 `http://sample-app.dev.example.com` → `environment: dev`, `version: develop-<sha>`.
+브라우저에서 `http://react-app.dev.example.com` → `environment: dev`, `version: develop-<sha>`.
 `version` 은 빌드 때 JS 번들에 들어가므로 `printenv` 나 `curl` 로는 보이지 않고 **브라우저에서만** 보인다.
-gitops-manifests 에는 `chore(dev): sample-app -> develop-<sha>` 커밋이 생긴다.
+gitops-manifests 에는 `chore(dev): react-app -> develop-<sha>` 커밋이 생긴다.
 
 ### 7.5 prod 배포
 
@@ -1398,9 +1399,9 @@ gitops-manifests 에는 `chore(dev): sample-app -> develop-<sha>` 커밋이 생�
 
 - **metrics-server(1.8)** — prod 에는 HPA 가 있다. 없으면 HPA 가 `<unknown>` 으로 남고 Argo CD 가
   이를 Degraded 로 판정해, 배포 자체는 됐는데도 "배포 대기" 단계가 health 에서 실패한다.
-- **hosts 에 `127.0.0.1 sample-app.example.com`** — Windows 와 WSL 양쪽(1.5).
+- **hosts 에 `127.0.0.1 react-app.example.com`** — Windows 와 WSL 양쪽(1.5).
 
-`sample-app » main` 빌드의 "prod 승인" 단계에서 **배포** 를 누른다(Stage View 의 단계 위, 또는
+`react-app » main` 빌드의 "prod 승인" 단계에서 **배포** 를 누른다(Stage View 의 단계 위, 또는
 콘솔 로그의 `Input requested` 링크). 이후 gitops 태그 커밋 → `argocd app sync` → Synced + Healthy
 대기까지 이어진다.
 
@@ -1408,26 +1409,26 @@ gitops-manifests 에는 `chore(dev): sample-app -> develop-<sha>` 커밋이 생�
 `배포 완료: prod → ... (version: main-xxxxxxxx)` 에 있다.
 
 ```bash
-# 1. gitops 리포지토리 — chore(prod): sample-app -> main-xxxxxxxx 커밋 (GitLab UI 로 봐도 된다)
+# 1. gitops 리포지토리 — chore(prod): react-app -> main-xxxxxxxx 커밋 (GitLab UI 로 봐도 된다)
 # 2. Argo CD — Synced / Healthy / 1 의 커밋 SHA
-kubectl -n argocd get application sample-app-prod \
+kubectl -n argocd get application react-app-prod \
   -o jsonpath='{.status.sync.status} {.status.health.status} {.status.sync.revision}{"\n"}'
 # 3. 클러스터
-kubectl -n sample-app-prod get deploy prod-sample-app \
+kubectl -n react-app-prod get deploy prod-react-app \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'      # ...:main-xxxxxxxx
-kubectl -n sample-app-prod get pods,hpa,pdb       # 파드 3개, cpu: x%/70%, ALLOWED DISRUPTIONS 1
+kubectl -n react-app-prod get pods,hpa,pdb       # 파드 3개, cpu: x%/70%, ALLOWED DISRUPTIONS 1
 # 4. Ingress
-curl -s http://sample-app.example.com/healthz     # ok
-curl -s http://sample-app.example.com/config.js   # env: "prod"
+curl -s http://react-app.example.com/healthz     # ok
+curl -s http://react-app.example.com/config.js   # env: "prod"
 ```
 
-마지막으로 브라우저에서 `http://sample-app.example.com` → `environment: prod`, `version: main-<sha>`.
+마지막으로 브라우저에서 `http://react-app.example.com` → `environment: prod`, `version: main-<sha>`.
 태그가 어느 단계에서 달라지면 그 앞 단계에서 멈춘 것이다.
 
 - **같은 커밋을 다시 빌드하면 파드는 교체되지 않는다.** 태그가 같아 "gitops 태그 갱신" 이
   `변경 없음 - 커밋 생략` 으로 끝나고, Argo CD 가 바꿀 것이 없다. `rollout history` 의 리비전이
   늘지 않는 게 정상이다.
-- curl 이 빈 응답이면 `-s` 가 에러를 숨긴 것이다. `curl -sS -H 'Host: sample-app.example.com'
+- curl 이 빈 응답이면 `-s` 가 에러를 숨긴 것이다. `curl -sS -H 'Host: react-app.example.com'
   http://localhost/healthz` 가 `ok` 면 Ingress 는 정상이고 이름 해석(hosts)이 문제다.
 
 ### 7.6 자주 막히는 곳
@@ -1468,13 +1469,13 @@ curl -s http://sample-app.example.com/config.js   # env: "prod"
 
 | 파일 | 역할 |
 |---|---|
-| `python-api/` | 앱 리포지토리 템플릿 — `app/main.py`, `tests/`, `Dockerfile`, `Jenkinsfile` |
-| `manifests/python-api/` | base + overlays(dev/prod). sample-app 과 같은 구조, 네임스페이스 `python-api-dev/prod` |
+| `samples/python-api/` | 앱 리포지토리 템플릿 — `app/main.py`, `tests/`, `Dockerfile`, `Jenkinsfile` |
+| `manifests/python-api/` | base + overlays(dev/prod). react-app 과 같은 구조, 네임스페이스 `python-api-dev/prod` |
 | `apps/python-api.yaml` | Argo CD Application 두 개 (dev 자동 / prod 수동 동기화) |
 | `apps/project.yaml` | AppProject `dev`/`prod` 의 허용 네임스페이스에 `python-api-*` 추가 |
 | `bootstrap/jenkins/casc.yaml` | 에이전트 Pod 템플릿에 `python` 컨테이너(`python:3.12-slim`) 추가 |
 
-`python-api/Jenkinsfile` 은 `ci/Jenkinsfile` 과 흐름이 같다. 앱 이름을 `APP_NAME` 한 곳에서
+`samples/python-api/Jenkinsfile` 은 `ci/Jenkinsfile` 과 흐름이 같다. 앱 이름을 `APP_NAME` 한 곳에서
 정하고(이미지 이름·overlay 경로·Argo CD 앱 이름이 여기서 나온다), 테스트 단계가 `python`
 컨테이너에서 `pytest` 를 도는 것만 다르다.
 
@@ -1483,7 +1484,7 @@ curl -s http://sample-app.example.com/config.js   # env: "prod"
 ```bash
 mkdir -p ~/workspace/python-api && cd ~/workspace/python-api
 git init -b main
-cp -r ~/workspace/cicd/python-api/. .
+cp -r ~/workspace/cicd/samples/python-api/. .
 
 # 테스트 — 바인드 마운트에 root 소유 캐시가 남지 않게 .pyc·pytest 캐시를 끈다
 docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/app -w /app python:3.12-slim \
@@ -1526,7 +1527,7 @@ unset NX_USER NX_PASS
 ```
 
 **3. gitops-manifests 에 올리기** — **새 파일만 골라서** 복사한다. `manifests/` 를 통째로 복사하면
-Jenkins 가 커밋해 둔 sample-app 의 이미지 태그가 이 리포지토리의 옛 값(`dev-0000000` 등)으로 되돌아간다.
+Jenkins 가 커밋해 둔 react-app 의 이미지 태그가 이 리포지토리의 옛 값(`dev-0000000` 등)으로 되돌아간다.
 
 ```bash
 cd ~/workspace/gitops-manifests && git pull
@@ -1595,7 +1596,7 @@ curl -s -o /dev/null -w '%{http_code}\n' $H/items/1               # 404
 ```
 
 브라우저에서 `http://python-api.dev.example.com/docs` 를 열면 Swagger UI 에서 같은 요청을 보낼 수 있다.
-sample-app 과 달리 `version` 이 API 응답에 있으므로 브라우저 없이 `curl` 로 배포 버전을 확인할 수 있다.
+react-app 과 달리 `version` 이 API 응답에 있으므로 브라우저 없이 `curl` 로 배포 버전을 확인할 수 있다.
 
 ### 8.5 prod 배포
 
@@ -1609,7 +1610,7 @@ kubectl -n python-api-prod get deploy prod-python-api \
 curl -s http://python-api.example.com/                                  # environment: prod
 ```
 
-HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(sample-app 과 다른 점).
+HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(react-app 과 다른 점).
 
 | 증상 | 원인 |
 |---|---|
@@ -1628,11 +1629,11 @@ HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(s
 | **Argo CD Image Updater** | `bootstrap/image-updater/` 적용. 레지스트리를 폴링해 새 태그를 write-back. CI 가 gitops 쓰기 권한을 가질 필요가 없다. |
 
 두 방식을 동시에 쓰면 커밋이 충돌하므로 하나만 선택한다. **이 리포지토리는 CI 커밋 방식**이므로
-`apps/sample-app.yaml` 에 image-updater 어노테이션이 없다. Image Updater 로 바꾸려면
-`bootstrap/image-updater/` 를 적용하고 `sample-app-dev` 의 `annotations` 에 아래를 되돌린다.
+`apps/react-app.yaml` 에 image-updater 어노테이션이 없다. Image Updater 로 바꾸려면
+`bootstrap/image-updater/` 를 적용하고 `react-app-dev` 의 `annotations` 에 아래를 되돌린다.
 
 ```yaml
-    argocd-image-updater.argoproj.io/image-list: app=nexus-docker.example.com/my-group/sample-app
+    argocd-image-updater.argoproj.io/image-list: app=nexus-docker.example.com/my-group/react-app
     argocd-image-updater.argoproj.io/app.update-strategy: newest-build
     argocd-image-updater.argoproj.io/app.allow-tags: regexp:^dev-[0-9a-f]{7}$
     argocd-image-updater.argoproj.io/write-back-method: git
@@ -1644,7 +1645,7 @@ HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(s
 
 ## 운영 관련 메모
 
-- **prod 는 수동 동기화**: `apps/sample-app.yaml` 의 `sample-app-prod` 에 `syncPolicy.automated` 가 없다.
+- **prod 는 수동 동기화**: `apps/react-app.yaml` 의 `react-app-prod` 에 `syncPolicy.automated` 가 없다.
   Jenkins 가 승인 후 `argocd app sync` 를 건다. 자동화하려면 dev 쪽 블록을 복사하고 `prod`
   AppProject 의 `syncWindows` 를 확인한다.
 - **HA**: 운영 클러스터는 `bootstrap/argocd/kustomization.yaml` 에서 `ha/install.yaml` 로 교체.
@@ -1661,8 +1662,8 @@ HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(s
 ```bash
 kubectl kustomize bootstrap/argocd            > /dev/null
 kubectl kustomize bootstrap/jenkins           > /dev/null
-kubectl kustomize manifests/sample-app/overlays/dev
-kubectl kustomize manifests/sample-app/overlays/prod
+kubectl kustomize manifests/react-app/overlays/dev
+kubectl kustomize manifests/react-app/overlays/prod
 kubectl kustomize manifests/python-api/overlays/dev
 kubectl kustomize manifests/python-api/overlays/prod
 ```
@@ -1679,7 +1680,7 @@ Jenkins(5장) 대신 GitLab 내장 CI 와 러너로 같은 흐름을 돌리는 �
 
 > ⚠️ **앱 리포지토리에는 둘 중 하나만 둔다.** `Jenkinsfile` 과 `.gitlab-ci.yml` 이 같이 있으면
 > push 한 번에 두 CI 가 모두 돌아 같은 overlay 에 이미지 태그를 커밋하고 서로 밀어낸다.
-> Jenkins 에서 옮겨 온다면 Jenkins 의 `sample-app` 잡도 비활성화한다.
+> Jenkins 에서 옮겨 온다면 Jenkins 의 `react-app` 잡도 비활성화한다.
 
 순서는 본문 1~4 → A.1 → 6 → A.2~A.4 다(5·7장 대신).
 
@@ -1735,7 +1736,7 @@ kubectl -n gitlab logs deploy/gitlab-runner --tail=20
 
 ### A.2 CI/CD 변수 등록
 
-`my-group/sample-app` 을 7.2 처럼 만든 뒤 Settings > CI/CD > **Variables** > Add variable.
+`my-group/react-app` 을 7.2 처럼 만든 뒤 Settings > CI/CD > **Variables** > Add variable.
 **모든 변수에서 *Protect variable* 체크를 끈다.** 켜 두면 보호 브랜치(`main`)에서만 값이 들어가
 `develop` 파이프라인이 빈 값으로 실패한다.
 
@@ -1759,7 +1760,7 @@ token 을 Maintainer / `write_repository` 로 발급해 대신 써도 된다).
 7.1 에서 `Jenkinsfile` 대신 `.gitlab-ci.yml` 을 복사한다.
 
 ```bash
-cd ~/workspace/sample-app
+cd ~/workspace/react-app
 rm -f Jenkinsfile
 cp ~/workspace/cicd/ci/.gitlab-ci.yml .
 git add -A && git commit -m "ci: GitLab CI"
@@ -1767,9 +1768,9 @@ git push -u origin main -o ci.skip       # main 은 prod 용이라 이 push 는 
 git push origin main:develop             # develop → dev 파이프라인 시작
 ```
 
-`sample-app` > Build > **Pipelines** 에서 `build-test → docker-build-push → deploy-dev → wait-dev` 가
+`react-app` > Build > **Pipelines** 에서 `build-test → docker-build-push → deploy-dev → wait-dev` 가
 모두 초록이면 된다. 확인 방법은 7.4 와 같다. gitops-manifests 에는
-`chore(dev): sample-app -> develop-<sha> [skip ci]` 커밋이 생긴다.
+`chore(dev): react-app -> develop-<sha> [skip ci]` 커밋이 생긴다.
 
 ### A.4 prod 배포와 자주 막히는 곳
 

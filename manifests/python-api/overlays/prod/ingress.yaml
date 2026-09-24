@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: python-api
-  # 평문(HTTP) 전제 — manifests/sample-app 의 ingress.yaml 과 같은 이유로 tls: 블록을 두지 않는다.
+  # 평문(HTTP) 전제 — manifests/react-app 의 ingress.yaml 과 같은 이유로 tls: 블록을 두지 않는다.
 spec:
   ingressClassName: nginx
   rules:

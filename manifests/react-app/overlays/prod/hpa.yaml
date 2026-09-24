@@ -1,12 +1,12 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: sample-app
+  name: react-app
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: prod-sample-app
+    name: prod-react-app
   minReplicas: 3
   maxReplicas: 10
   metrics:
