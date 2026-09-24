@@ -5,3 +5,4 @@ secrets/
 .env
 /.idea/*
 /capture/*
+/TODOLIST.md

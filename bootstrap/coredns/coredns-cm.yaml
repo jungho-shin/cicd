@@ -28,6 +28,8 @@
 #   jenkins.example.com             Jenkins (README 5장)
 #   react-app.dev.example.com       샘플 앱 dev
 #   react-app.example.com           샘플 앱 prod
+#   python-api.dev.example.com      샘플 API dev
+#   python-api.example.com          샘플 API prod
 #
 # 주의
 #   - CoreDNS 의 플러그인 실행 순서는 Corefile 에 쓴 순서가 아니라 컴파일 시점의
@@ -74,6 +76,8 @@ data:
         rewrite name jenkins.example.com            ingress-nginx-controller.ingress-nginx.svc.cluster.local
         rewrite name react-app.dev.example.com      ingress-nginx-controller.ingress-nginx.svc.cluster.local
         rewrite name react-app.example.com          ingress-nginx-controller.ingress-nginx.svc.cluster.local
+        rewrite name python-api.dev.example.com     ingress-nginx-controller.ingress-nginx.svc.cluster.local
+        rewrite name python-api.example.com         ingress-nginx-controller.ingress-nginx.svc.cluster.local
         # ----------------------------------------------------------------
         kubernetes cluster.local in-addr.arpa ip6.arpa {
            pods insecure
