@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: python-api-dev
+  namespace: argocd
+  annotations:
+    repo: python-api          # notifications 템플릿에서 사용
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: dev
+  source:
+    repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
+    targetRevision: main
+    path: manifests/python-api/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: python-api-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: python-api-prod
+  namespace: argocd
+  annotations:
+    repo: python-api
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: prod
+  source:
+    repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
+    targetRevision: main
+    path: manifests/python-api/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: python-api-prod
+  syncPolicy:
+    # 운영은 수동 승인 배포. 자동화하려면 automated 블록을 추가한다.
+    syncOptions:
+      - CreateNamespace=true
+  revisionHistoryLimit: 20

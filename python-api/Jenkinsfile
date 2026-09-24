@@ -1,0 +1,187 @@
+// ===========================================================================
+// python-api 리포지토리(gitlab.example.com/my-group/python-api)의 루트에 둔다.
+// ci/Jenkinsfile(sample-app)과 흐름이 같고, 다른 점은 두 가지다.
+//   - 앱 이름을 APP_NAME 한 곳에서 정한다 (이미지·overlay 경로·Argo CD 앱 이름이 여기서 파생된다)
+//   - 테스트 단계가 node 대신 python 컨테이너에서 pytest 를 돈다
+//
+// 흐름: 테스트(pytest) → 이미지 빌드&푸시(kaniko) → [main 만] prod 승인
+//       → gitops 리포지토리 태그 갱신 커밋 → Argo CD 배포 완료까지 대기
+//
+// 에이전트는 bootstrap/jenkins/casc.yaml 의 Pod 템플릿 `build` 를 쓴다.
+// 컨테이너: python / kaniko / tools(kubectl·kustomize·git) / argocd
+//
+// 자격증명(JCasC 가 jenkins-secrets 에서 주입, README 5.2 참고)
+//   nexus-registry     Nexus docker-hosted push 계정 (kaniko)
+//   gitops-repo        GitLab Group access token (ci-bot) — 앱 체크아웃 + gitops push
+//   argocd-auth-token  argocd account generate-token --account cicd
+//
+// 브랜치 규칙
+//   develop → dev 배포 (Argo CD 자동 동기화)
+//   main    → prod 배포 (수동 승인 후, Argo CD 수동 동기화)
+// ===========================================================================
+pipeline {
+  agent { label 'build' }
+
+  options {
+    timestamps()
+    timeout(time: 30, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    disableConcurrentBuilds()
+  }
+
+  environment {
+    APP_NAME      = 'python-api'
+    // 평문 HTTP 레지스트리. 노드 containerd 는 이 이름을 localhost:30082 로 보낸다
+    REGISTRY      = 'nexus-docker.example.com'
+    IMAGE         = "${REGISTRY}/my-group/${APP_NAME}"
+    // 스킴 없이 적는다. 아래에서 http:// 를 붙인다
+    GITOPS_REPO   = 'gitlab.example.com/my-group/gitops-manifests.git'
+    // 평문 Ingress. 포트를 생략하면 443 으로 붙을 수 있다
+    ARGOCD_SERVER = 'argocd.example.com:80'
+  }
+
+  stages {
+    stage('준비') {
+      steps {
+        script {
+          def raw = env.BRANCH_NAME ?: (env.GIT_BRANCH ?: '')
+          raw = raw.replaceFirst('^origin/', '')
+          env.BRANCH = raw ?: 'unknown'
+
+          def slug = env.BRANCH.toLowerCase().replaceAll('[^a-z0-9]+', '-')
+          slug = slug.replaceAll('^-+', '').replaceAll('-+$', '')
+          def sha = (env.GIT_COMMIT ?: '').take(8)
+          env.IMAGE_TAG = slug + '-' + sha
+
+          if (env.BRANCH == 'develop') {
+            env.DEPLOY_ENV = 'dev'
+          } else if (env.BRANCH == 'main') {
+            env.DEPLOY_ENV = 'prod'
+          } else {
+            env.DEPLOY_ENV = ''
+          }
+          echo "app=${env.APP_NAME}  branch=${env.BRANCH}  tag=${env.IMAGE_TAG}  deploy=${env.DEPLOY_ENV ?: '(없음)'}"
+        }
+      }
+    }
+
+    stage('테스트') {
+      steps {
+        container('python') {
+          sh '''
+            set -eu
+            # 워크스페이스 안에 가상환경을 만든다(에이전트 Pod 는 빌드마다 새로 뜬다)
+            python -m venv .venv
+            . .venv/bin/activate
+            pip install --no-cache-dir --disable-pip-version-check -r requirements-dev.txt
+            pytest -q
+          '''
+        }
+      }
+    }
+
+    stage('이미지 빌드·푸시') {
+      when { expression { env.DEPLOY_ENV } }
+      steps {
+        container('kaniko') {
+          withCredentials([usernamePassword(credentialsId: 'nexus-registry',
+                                            usernameVariable: 'REG_USER',
+                                            passwordVariable: 'REG_PASS')]) {
+            sh '''
+              set -eu
+              mkdir -p /kaniko/.docker
+              AUTH=$(printf '%s:%s' "$REG_USER" "$REG_PASS" | base64 | tr -d '\\n')
+              printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+
+              # --insecure / --skip-tls-verify : 평문 HTTP 레지스트리로 push
+              # --insecure-pull                : 평문 HTTP 레지스트리(docker-group)에서 베이스 이미지 pull
+              # Groovy 의 삼중따옴표 문자열은 줄 끝 백슬래시를 줄 연결로 먹어치우므로 두 개로 적는다.
+              # .venv 는 .dockerignore 로 빠진다(테스트 단계가 워크스페이스에 만든다).
+              /kaniko/executor --context "$WORKSPACE" --dockerfile Dockerfile \\
+                --build-arg "APP_VERSION=${IMAGE_TAG}" \\
+                --destination "${IMAGE}:${IMAGE_TAG}" \\
+                --destination "${IMAGE}:${GIT_COMMIT}" \\
+                --insecure --skip-tls-verify --insecure-pull
+            '''
+          }
+        }
+      }
+    }
+
+    stage('prod 승인') {
+      when { expression { env.DEPLOY_ENV == 'prod' } }
+      steps {
+        timeout(time: 60, unit: 'MINUTES') {
+          input message: "prod 에 ${env.APP_NAME}:${env.IMAGE_TAG} 를 배포할까요?", ok: '배포'
+        }
+      }
+    }
+
+    stage('gitops 태그 갱신') {
+      when { expression { env.DEPLOY_ENV } }
+      steps {
+        container('tools') {
+          withCredentials([usernamePassword(credentialsId: 'gitops-repo',
+                                            usernameVariable: 'GITOPS_USER',
+                                            passwordVariable: 'GITOPS_TOKEN')]) {
+            sh '''
+              set -eu
+              rm -rf gitops
+              git config --global user.email "ci@example.com"
+              git config --global user.name "jenkins-ci"
+              git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
+
+              cd gitops/manifests/${APP_NAME}/overlays/${DEPLOY_ENV}
+              # 왼쪽은 overlay 의 images[].name (고정 이름), 오른쪽이 새 이미지다.
+              kustomize edit set image "nexus-docker.example.com/my-group/${APP_NAME}=${IMAGE}:${IMAGE_TAG}"
+
+              cd "$WORKSPACE/gitops"
+              git add -A
+              if git diff --cached --quiet; then
+                echo "변경 없음 - 커밋 생략"
+                exit 0
+              fi
+              git commit -m "chore(${DEPLOY_ENV}): ${APP_NAME} -> ${IMAGE_TAG}"
+              git push origin HEAD:main
+            '''
+          }
+        }
+      }
+    }
+
+    stage('배포 대기') {
+      when { expression { env.DEPLOY_ENV } }
+      steps {
+        container('argocd') {
+          withCredentials([string(credentialsId: 'argocd-auth-token', variable: 'ARGOCD_AUTH_TOKEN')]) {
+            sh '''
+              set -eu
+              OPTS="--grpc-web --plaintext --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
+              APP="${APP_NAME}-${DEPLOY_ENV}"
+
+              argocd app get "$APP" --refresh $OPTS > /dev/null
+              # dev 는 자동 동기화라 prod 만 sync 한다(ci/Jenkinsfile 과 같은 이유)
+              if [ "$DEPLOY_ENV" = "prod" ]; then
+                argocd app sync "$APP" $OPTS
+              fi
+              argocd app wait "$APP" --sync --health --timeout 600 $OPTS
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      script {
+        if (env.DEPLOY_ENV) {
+          def url = (env.DEPLOY_ENV == 'dev') ? "http://${env.APP_NAME}.dev.example.com"
+                                              : "http://${env.APP_NAME}.example.com"
+          echo "배포 완료: ${env.DEPLOY_ENV} → ${url} (version: ${env.IMAGE_TAG})"
+        }
+      }
+    }
+    cleanup { cleanWs() }
+  }
+}

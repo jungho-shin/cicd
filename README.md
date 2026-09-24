@@ -63,12 +63,14 @@ apps/
   project.yaml                AppProject: dev / prod
   app-of-apps.yaml            부트스트랩 Application (이것만 apply)
   sample-app.yaml             sample-app dev/prod Application
+  python-api.yaml             python-api dev/prod Application (8장)
   applicationset-gitlab.yaml  (선택) 그룹 리포지토리 자동 등록
 
 manifests/sample-app/
   base/                       Deployment / Service / ServiceAccount
   overlays/dev/               replicas 1, dev 호스트, develop-<sha> 태그
   overlays/prod/              replicas 3, HPA, PDB, 수동 배포
+manifests/python-api/         두 번째 앱 (8장). replicas 1, HPA·PDB 없음
 
 ci/Jenkinsfile                앱 리포지토리 루트에 복사해서 사용 (7장)
 ci/.gitlab-ci.yml             (부록) GitLab CI 로 돌릴 때 대신 사용 — 둘 중 하나만
@@ -79,6 +81,12 @@ sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx
   Dockerfile                  node 빌드 → nginx-unprivileged, UID 10001
   nginx.conf                  8080, /healthz, 읽기 전용 루트 대응(쓰기 경로는 /tmp)
   docker-entrypoint.sh        APP_ENV 로 /tmp/config.js 생성 후 nginx 기동
+
+python-api/                   두 번째 앱 템플릿 (FastAPI, 메모리 CRUD) — 8장
+  app/main.py                 /, /healthz, /items CRUD
+  tests/test_main.py          pytest
+  Dockerfile                  python:3.12-slim + uvicorn, UID 10001
+  Jenkinsfile                 ci/Jenkinsfile 과 같은 흐름, APP_NAME 으로 앱 이름 지정, pytest
 ```
 
 ## 설치 순서
@@ -95,6 +103,7 @@ sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx
 | 5. Jenkins | CI 컨트롤러 (JCasC) | 4.4 의 Argo CD 토큰이 필요하다 |
 | 6. webhook | GitLab → Argo CD 푸시 알림 | 없으면 180초 폴링 |
 | 7. 파이프라인 | 앱 리포지토리에 `Jenkinsfile` 배치 + Jenkins 잡 등록 | 여기까지 하면 push → 배포가 이어진다 |
+| 8. 두 번째 앱 | python-api (FastAPI) | 앱을 추가할 때 앱마다 필요한 것만 |
 
 GitLab CI(러너)로 돌리려면 5 를 건너뛰고 7 대신 `부록: GitLab CI 로 돌리기` 로 간다.
 
@@ -126,7 +135,8 @@ Windows hosts 파일(1.5), 클러스터 안에서는 CoreDNS rewrite(1.6)로 같
 | `argocd.example.com` | Argo CD UI·CLI (`:80`, 4.3). `grpc.argocd.example.com` 은 TLS 구성용 |
 | `jenkins.example.com` | Jenkins UI (5장) |
 | `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리(이미지 주소) |
-| `sample-app.example.com` / `sample-app.dev.example.com` | 서비스 호스트 |
+| `sample-app.example.com` / `sample-app.dev.example.com` | 서비스 호스트 (7장) |
+| `python-api.example.com` / `python-api.dev.example.com` | 서비스 호스트 (8장) |
 
 ## 1. 클러스터 준비 (kind on WSL2)
 
@@ -280,6 +290,8 @@ control-plane 이 아닌 노드에 떠 있는 것이고, `404` 면 Host 헤더�
 127.0.0.1  grpc.argocd.example.com
 127.0.0.1  sample-app.dev.example.com
 127.0.0.1  sample-app.example.com
+127.0.0.1  python-api.dev.example.com
+127.0.0.1  python-api.example.com
 ```
 
 WSL 안의 `/etc/hosts` 는 기본적으로 Windows hosts 파일에서 자동 생성되므로 따로
@@ -1208,11 +1220,12 @@ kubectl -n jenkins exec jenkins-0 -- cat /var/jenkins_home/casc.d/jenkins.yaml |
 ### 5.4 에이전트 Pod 템플릿
 
 Jenkinsfile 의 `agent { label 'build' }` 가 `casc.yaml` 의 `build` 템플릿을 쓴다.
-컨테이너 4개(+ Jenkins 가 붙이는 `jnlp`)가 한 Pod 에 뜨고 워크스페이스를 공유한다.
+컨테이너 5개(+ Jenkins 가 붙이는 `jnlp`)가 한 Pod 에 뜨고 워크스페이스를 공유한다.
 
 | 컨테이너 | 이미지 (`nexus-docker-group.example.com/...`) | 단계 |
 |---|---|---|
 | `node` | `library/node:22-alpine` | `npm ci` / `npm test` / `npm run build` |
+| `python` | `library/python:3.12-slim` | python-api 의 `pytest` (8장) |
 | `kaniko` | `kaniko-project/executor:v1.23.2-debug` (gcr-proxy) | 이미지 빌드·Nexus push |
 | `tools` | `alpine/k8s:1.30.2` | `kustomize edit set image` → gitops 커밋 |
 | `argocd` | `argoproj/argocd:v3.5.2` (quay-proxy) | `argocd app sync` / `wait` |
@@ -1436,6 +1449,177 @@ curl -s http://sample-app.example.com/config.js   # env: "prod"
 | 파드 `ImagePullBackOff` + `401` | `regcred` (3.5-2) |
 | `jenkins-0` 의 `install-plugins` 가 CrashLoopBackOff | 외부 DNS (5.3) |
 
+## 8. 두 번째 앱: python-api (FastAPI)
+
+같은 파이프라인에 앱을 하나 더 올린다. 7장까지 만든 것(Jenkins 자격증명, 그룹 토큰, Argo CD
+`cicd` 계정, Nexus)은 그대로 쓰고, **앱마다 새로 필요한 것만** 이 장에서 만든다.
+
+| 경로 | 설명 |
+|---|---|
+| `GET /` | `service` / `environment` / `version` / `hostname`(응답한 파드) |
+| `GET /healthz` | `ok` (프로브) |
+| `GET /items`, `POST /items` | 목록 / 생성(201) |
+| `GET·PUT·DELETE /items/{id}` | 조회 / 수정 / 삭제(204). 없으면 404, 입력이 틀리면 422 |
+| `GET /docs` | Swagger UI (FastAPI 가 자동 생성) |
+
+**데이터는 파드 메모리에만 있다.** 재배포·재시작하면 비워지고, 파드가 둘 이상이면 요청마다 다른
+파드가 받아 목록이 달라진다. 그래서 dev·prod 모두 `replicas: 1` 이고 HPA·PDB 를 두지 않았다.
+늘리려면 저장소를 DB 로 빼야 한다.
+
+| 파일 | 역할 |
+|---|---|
+| `python-api/` | 앱 리포지토리 템플릿 — `app/main.py`, `tests/`, `Dockerfile`, `Jenkinsfile` |
+| `manifests/python-api/` | base + overlays(dev/prod). sample-app 과 같은 구조, 네임스페이스 `python-api-dev/prod` |
+| `apps/python-api.yaml` | Argo CD Application 두 개 (dev 자동 / prod 수동 동기화) |
+| `apps/project.yaml` | AppProject `dev`/`prod` 의 허용 네임스페이스에 `python-api-*` 추가 |
+| `bootstrap/jenkins/casc.yaml` | 에이전트 Pod 템플릿에 `python` 컨테이너(`python:3.12-slim`) 추가 |
+
+`python-api/Jenkinsfile` 은 `ci/Jenkinsfile` 과 흐름이 같다. 앱 이름을 `APP_NAME` 한 곳에서
+정하고(이미지 이름·overlay 경로·Argo CD 앱 이름이 여기서 나온다), 테스트 단계가 `python`
+컨테이너에서 `pytest` 를 도는 것만 다르다.
+
+### 8.1 로컬에서 먼저 확인 (WSL)
+
+```bash
+mkdir -p ~/workspace/python-api && cd ~/workspace/python-api
+git init -b main
+cp -r ~/workspace/cicd/python-api/. .
+
+# 테스트 — 바인드 마운트에 root 소유 캐시가 남지 않게 .pyc·pytest 캐시를 끈다
+docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/app -w /app python:3.12-slim \
+  sh -c 'pip install -q --root-user-action=ignore -r requirements-dev.txt && pytest -q -p no:cacheprovider'
+
+# 매니페스트와 같은 조건(읽기 전용 + UID 10001)으로 실행
+docker build --build-arg REGISTRY=docker.io --build-arg APP_VERSION=local-test -t python-api:local .
+docker run -d --name python-api-test --read-only --tmpfs /tmp -u 10001 -e APP_ENV=local -p 8089:8080 python-api:local
+curl -s localhost:8089/                   # {"service":"python-api","environment":"local","version":"local-test",...}
+curl -s -X POST localhost:8089/items -H 'Content-Type: application/json' -d '{"name":"pen","price":1.5}'
+curl -s localhost:8089/items
+docker logs python-api-test | tail -5     # Read-only file system 오류가 없어야 한다
+docker rm -f python-api-test
+```
+
+### 8.2 클러스터 쪽 준비
+
+**1. Jenkins 에이전트에 python 컨테이너** — `casc.yaml` 만 바뀌었으므로 적용 후 JCasC 를 다시 읽힌다(5.3).
+
+```bash
+cd ~/workspace/cicd && git pull
+kubectl kustomize bootstrap/jenkins | kubectl apply -f -
+kubectl -n jenkins exec jenkins-0 -- grep -A1 'name: "python"' /var/jenkins_home/casc.d/jenkins.yaml
+# 보이면 Manage Jenkins > Configuration as Code > Reload existing configuration
+docker exec devops-worker crictl pull nexus-docker-group.example.com/library/python:3.12-slim   # docker-hub 프록시 경유
+```
+
+**2. 앱 네임스페이스 pull secret** — 3.5-2 와 같다. 네임스페이스 이름만 바뀐다.
+
+```bash
+read -rp 'nexus user: ' NX_USER; read -rsp 'nexus password: ' NX_PASS; echo
+for ns in python-api-dev python-api-prod; do
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "$ns" create secret docker-registry regcred \
+    --docker-server=nexus-docker.example.com \
+    --docker-username="$NX_USER" --docker-password="$NX_PASS" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
+unset NX_USER NX_PASS
+```
+
+**3. gitops-manifests 에 올리기** — **새 파일만 골라서** 복사한다. `manifests/` 를 통째로 복사하면
+Jenkins 가 커밋해 둔 sample-app 의 이미지 태그가 이 리포지토리의 옛 값(`dev-0000000` 등)으로 되돌아간다.
+
+```bash
+cd ~/workspace/gitops-manifests && git pull
+cp ~/workspace/cicd/apps/python-api.yaml apps/
+cp ~/workspace/cicd/apps/project.yaml apps/
+cp -r ~/workspace/cicd/manifests/python-api manifests/
+git status --short            # apps/python-api.yaml, apps/project.yaml, manifests/python-api/ 만 보여야 한다
+git diff apps/project.yaml    # python-api-dev / python-api-prod 두 줄씩만 늘어야 한다
+git add -A && git commit -m "add python-api" && git push
+```
+
+`bootstrap` Application 이 `apps/` 를 보고 있으므로 새 Application 이 자동으로 생긴다
+(webhook 이 있으면 바로, 없으면 3분 안).
+
+```bash
+argocd app list --grpc-web | grep python-api
+```
+
+| Application | SYNC | HEALTH | 이유 |
+|---|---|---|---|
+| `python-api-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 첫 빌드가 태그를 커밋하면 풀린다 |
+| `python-api-prod` | OutOfSync | Missing | 수동 동기화 대상 |
+
+`application destination ... is not permitted in project` 가 보이면 `apps/project.yaml` 이 아직
+반영되지 않은 것이다.
+
+**4. hosts** — Windows 와 WSL 양쪽에 `127.0.0.1 python-api.dev.example.com`,
+`127.0.0.1 python-api.example.com` (1.5).
+
+### 8.3 GitLab 프로젝트와 Jenkins 잡
+
+`my-group` 에 `python-api` 프로젝트를 만든다(Private, README 초기화 끔). 그룹 토큰(2.4)은 그룹의 새
+프로젝트에도 그대로 통한다 — 앱이 늘어도 토큰을 다시 발급하지 않는 것이 그룹 토큰을 쓴 이유다.
+
+```bash
+curl -s -o /dev/null -w 'read  %{http_code}\n' -u "ci-bot:$(tr -d '\n' < ~/gitlab-group-token.txt)" \
+  'http://gitlab.example.com/my-group/python-api.git/info/refs?service=git-upload-pack'     # 200
+
+cd ~/workspace/python-api
+git add . && git commit -m "initial: python-api"
+git remote add origin http://gitlab.example.com/my-group/python-api.git
+git push -u origin main
+git push origin main:develop
+```
+
+Jenkins 에 7.3 과 같은 방법으로 Multibranch Pipeline `python-api` 를 만든다. 다른 것은 URL 뿐이다.
+
+- Project Repository: `http://gitlab.gitlab.svc.cluster.local/my-group/python-api.git`
+- Credentials: `ci-bot/****** (gitops 매니페스트 리포지토리 push 용)`
+
+저장하면 스캔 후 `develop`·`main` 빌드가 걸리고, `main` 은 "prod 승인" 에서 멈춘다(7.3 과 같다).
+
+### 8.4 dev 확인
+
+`python-api » develop` 이 초록이면 된다. 콘솔 마지막 줄에
+`배포 완료: dev → http://python-api.dev.example.com (version: develop-xxxxxxxx)`.
+
+```bash
+H=http://python-api.dev.example.com
+curl -s $H/                                   # environment: dev, version: develop-xxxxxxxx
+curl -s -X POST $H/items -H 'Content-Type: application/json' -d '{"name":"pen","price":1.5}'
+curl -s $H/items                              # [{"id":1,"name":"pen",...}]
+curl -s -X PUT $H/items/1 -H 'Content-Type: application/json' -d '{"name":"pencil","price":2}'
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $H/items/1     # 204
+curl -s -o /dev/null -w '%{http_code}\n' $H/items/1               # 404
+```
+
+브라우저에서 `http://python-api.dev.example.com/docs` 를 열면 Swagger UI 에서 같은 요청을 보낼 수 있다.
+sample-app 과 달리 `version` 이 API 응답에 있으므로 브라우저 없이 `curl` 로 배포 버전을 확인할 수 있다.
+
+### 8.5 prod 배포
+
+`python-api » main` 의 "prod 승인" 에서 **배포** 를 누른다. 확인 방법은 7.5 와 같다(앱 이름과 호스트만 바꾼다).
+
+```bash
+kubectl -n argocd get application python-api-prod \
+  -o jsonpath='{.status.sync.status} {.status.health.status}{"\n"}'     # Synced Healthy
+kubectl -n python-api-prod get deploy prod-python-api \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'         # ...:main-xxxxxxxx
+curl -s http://python-api.example.com/                                  # environment: prod
+```
+
+HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(sample-app 과 다른 점).
+
+| 증상 | 원인 |
+|---|---|
+| 에이전트 Pod 에 `python` 컨테이너가 없음 (`container python not found`) | 8.2-1 적용·Reload 안 함 |
+| "테스트" 단계 `pip install` 이 이름 해석 실패 | 에이전트가 pypi.org 에 직접 붙는다. 외부 DNS (5.3 과 같은 원인) |
+| "gitops 태그 갱신" 이 `cd: .../manifests/python-api/...: No such file` | 8.2-3 을 안 함 — gitops 리포지토리에 overlay 가 없다 |
+| "배포 대기" 가 app not found / `permission denied` | Application 이 아직 없다(8.2-3), 또는 AppProject 허용 네임스페이스 |
+| 파드 `ImagePullBackOff` + `401` | `python-api-*` 네임스페이스에 `regcred` 없음 (8.2-2) |
+| 만든 item 이 사라짐 | 정상 — 재배포·재시작하면 메모리가 비워진다 |
+
 ## 이미지 태그 갱신 방식 (택1)
 
 | 방식 | 설명 |
@@ -1479,6 +1663,8 @@ kubectl kustomize bootstrap/argocd            > /dev/null
 kubectl kustomize bootstrap/jenkins           > /dev/null
 kubectl kustomize manifests/sample-app/overlays/dev
 kubectl kustomize manifests/sample-app/overlays/prod
+kubectl kustomize manifests/python-api/overlays/dev
+kubectl kustomize manifests/python-api/overlays/prod
 ```
 
 ## 부록: GitLab CI 로 돌리기 (Jenkins 대체)

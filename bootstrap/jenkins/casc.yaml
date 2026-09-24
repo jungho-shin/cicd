@@ -99,6 +99,11 @@ data:
                     image: "nexus-docker-group.example.com/library/node:22-alpine"
                     command: "cat"
                     ttyEnabled: true
+                  # python-api 의 pytest. 이미지 안 python 버전과 맞춘다(python-api/Dockerfile)
+                  - name: "python"
+                    image: "nexus-docker-group.example.com/library/python:3.12-slim"
+                    command: "cat"
+                    ttyEnabled: true
                   # argocd CLI. 서버(bootstrap/argocd/kustomization.yaml)와 같은 태그.
                   # 공식 이미지는 quay.io 에 있다 → Nexus quay-proxy 경유
                   - name: "argocd"
