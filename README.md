@@ -275,11 +275,15 @@ control-plane 이 아닌 노드에 떠 있는 것이고, `404` 면 Host 헤더�
 127.0.0.1  argocd.example.com
 127.0.0.1  grpc.argocd.example.com
 127.0.0.1  sample-app.dev.example.com
+127.0.0.1  sample-app.example.com
 ```
 
 WSL 안의 `/etc/hosts` 는 기본적으로 Windows hosts 파일에서 자동 생성되므로 따로
-손대지 않아도 된다. `/etc/wsl.conf` 에서 `generateHosts=false` 로 꺼 뒀다면 같은
-내용을 직접 넣는다. Windows 에서는 등록 후 `ipconfig /flushdns` 를 실행하고,
+손대지 않아도 된다. 단 **WSL 이 시작될 때 한 번만 생성된다.** 이미 떠 있는 WSL 에는
+나중에 추가한 줄이 반영되지 않으므로, kind 를 멈추지 않으려면 `wsl --shutdown` 대신
+WSL 의 `/etc/hosts` 에도 같은 줄을 직접 넣는다(다음 WSL 시작 때 Windows 쪽 내용으로
+다시 덮어쓰이므로 Windows hosts 에도 반드시 있어야 한다).
+`/etc/wsl.conf` 에서 `generateHosts=false` 로 꺼 뒀다면 같은 내용을 직접 넣는다. Windows 에서는 등록 후 `ipconfig /flushdns` 를 실행하고,
 크롬은 자체 DNS 캐시가 있어 재시작이 필요할 수 있다.
 
 ### 1.6 CoreDNS 에 로컬 호스트명 등록
