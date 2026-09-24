@@ -6,14 +6,15 @@
 # ---------------------------------------------------------------------------
 #
 # `jenkins-secrets` Secret 은 이 파일에 두지 않는다. GitLab root 비밀번호(2.2)·
-# 러너 토큰(2.4)·Argo CD 시크릿(4.2) 과 같은 이유다 — 이 리포지토리는 공개이고
+# Argo CD 시크릿(4.2) 과 같은 이유다 — 이 리포지토리는 공개이고
 # 매니페스트에 값을 적으면 git 기록에 영구히 남는다.
 #
-# README 부록 "설치" 의 `kubectl create secret` 으로 먼저 만든다. 키 5개:
+# README 5.2 의 `kubectl create secret` 으로 먼저 만든다. 키 7개:
 #   JENKINS_ADMIN_ID        관리자 계정 (예: admin)
 #   JENKINS_ADMIN_PASSWORD  관리자 비밀번호
-#   GITOPS_USER             gitops push 계정 — GitLab Project access token 의 *이름*
-#   GITOPS_TOKEN            그 토큰 값 (write_repository)
+#   GITOPS_USER             GitLab Group access token 의 *이름* (ci-bot) — git 인증 사용자명
+#   GITOPS_TOKEN            그 토큰 값 (read_repository + write_repository, Maintainer)
+#                           앱 리포지토리 체크아웃과 gitops push 를 둘 다 한다 (README 2.4)
 #   ARGOCD_AUTH_TOKEN       argocd account generate-token --account cicd
 #   NEXUS_USER              Nexus docker-hosted push 계정
 #   NEXUS_PASSWORD          그 비밀번호
@@ -84,7 +85,7 @@ data:
                 containers:
                   # 도커 데몬 없이 이미지를 빌드/푸시한다(DinD 특권 컨테이너 불필요)
                   - name: "kaniko"
-                    # Nexus gcr-proxy 경유. 부록 "사전 조건" 에서 프록시를 먼저 만든다
+                    # Nexus gcr-proxy 경유. README 3.3 에서 프록시를 먼저 만든다
                     image: "nexus-docker-group.example.com/kaniko-project/executor:v1.23.2-debug"
                     command: "/busybox/cat"
                     ttyEnabled: true

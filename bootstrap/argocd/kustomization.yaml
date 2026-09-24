@@ -18,7 +18,7 @@ resources:
   - ingress.yaml
 
 # configs/ 컴포넌트가 argocd-cm, argocd-rbac-cm, argocd-cmd-params-cm,
-# argocd-notifications-cm 을 병합한다. 시크릿 값은 병합하지 않는다(README 4.2, 5).
+# argocd-notifications-cm 을 병합한다. 시크릿 값은 병합하지 않는다(README 4.2, 6).
 # argocd-server 의 --insecure 는 argocd-cmd-params-cm 의 server.insecure 로 제어된다.
 components:
   - ./configs

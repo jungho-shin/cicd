@@ -12,6 +12,7 @@ resources:
   # 접속하므로 HTTP(30080)용으로는 필요 없다 — kind 에서는 30080 매핑이 없어
   # 주석을 풀어도 노드 컨테이너 안에서만 열린다. README 2.3 참고.
   # - nodeport.yaml
-  # 러너. 토큰 Secret(gitlab-runner-secrets)은 파일에 없고 README 2.4 에서 kubectl 로 먼저 만든다.
-  # Secret 없이 적용되면 러너 Pod 만 CreateContainerConfigError 로 기다리고 나머지는 영향 없다.
-  - runner.yaml
+  # 러너. 이 구성의 CI 는 Jenkins(README 5장)라 기본 제외한다.
+  # GitLab CI 로 돌릴 때만 주석 해제 — 토큰 Secret(gitlab-runner-secrets)을 README 부록 A.1 에서
+  # kubectl 로 먼저 만든다. 주석 처리해도 이미 떠 있는 러너는 지워지지 않는다(apply 는 prune 하지 않는다).
+  # - runner.yaml

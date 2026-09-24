@@ -11,7 +11,7 @@
 #
 # 토큰 Secret(gitlab-runner-secrets, 키 RUNNER_TOKEN)은 이 파일에 두지 않는다.
 # 파일에 두면 토큰이 커밋되거나, 적용할 때마다 placeholder 로 되돌아간다.
-# README 2.4 처럼 kubectl create secret 으로 먼저 만든 뒤 이 파일을 적용한다.
+# README 부록 A.1 처럼 kubectl create secret 으로 먼저 만든 뒤 이 파일을 적용한다.
 # Secret 이 없으면 러너 Pod 는 CreateContainerConfigError 로 멈춘다.
 #
 # 잡 Pod 는 러너와 같은 gitlab 네임스페이스에 뜬다.
@@ -153,7 +153,7 @@ spec:
               exec gitlab-runner run --config /etc/gitlab-runner/config.toml
           envFrom:
             - secretRef:
-                name: gitlab-runner-secrets     # README 2.4 에서 kubectl 로 생성
+                name: gitlab-runner-secrets     # README 부록 A.1 에서 kubectl 로 생성
           ports:
             - name: metrics
               containerPort: 9252

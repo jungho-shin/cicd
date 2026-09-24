@@ -17,7 +17,7 @@ spec:
       recurse: true
       # applicationset-gitlab.yaml 은 기본 제외. placeholder 토큰 Secret 이 함께 들어 있어
       # 포함하면 selfHeal 이 kubectl 로 넣은 실제 토큰을 계속 __REPLACE_ME__ 로 되돌린다.
-      # 그룹 스캔(README 2.5 의 선택 항목)을 쓸 때 Secret 을 파일에서 빼고 이 목록에서 지운다.
+      # 그룹 스캔(README 2.4 의 선택 항목)을 쓸 때 Secret 을 파일에서 빼고 이 목록에서 지운다.
       exclude: '{app-of-apps.yaml,applicationset-gitlab.yaml}'
   destination:
     server: https://kubernetes.default.svc

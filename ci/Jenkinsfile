@@ -4,14 +4,14 @@
 //
 // 흐름: 테스트/빌드(node) → 이미지 빌드&푸시(kaniko) → gitops 리포지토리 태그 갱신 커밋
 //       → Argo CD 가 감지하여 배포 → 배포 완료까지 대기
-//   (ci/.gitlab-ci.yml 과 같은 흐름이다. CI 는 둘 중 하나만 쓴다 — README 부록 참고)
+//   (ci/.gitlab-ci.yml 과 같은 흐름이다. CI 는 둘 중 하나만 쓴다 — README 7장 / 부록)
 //
 // 에이전트는 bootstrap/jenkins/casc.yaml 의 Pod 템플릿 `build` 를 쓴다.
 // 컨테이너 4개: node / kaniko / tools(kubectl·kustomize·git) / argocd
 //
-// 자격증명(JCasC 가 jenkins-secrets 에서 주입, README 부록 "설치" 참고)
+// 자격증명(JCasC 가 jenkins-secrets 에서 주입, README 5.2 참고)
 //   nexus-registry     Nexus docker-hosted push 계정 (kaniko)
-//   gitops-repo        gitops 리포지토리 push 용 Project access token
+//   gitops-repo        GitLab Group access token (ci-bot) — 앱 체크아웃 + gitops push
 //   argocd-auth-token  argocd account generate-token --account cicd
 //
 // 브랜치 규칙

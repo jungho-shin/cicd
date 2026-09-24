@@ -5,7 +5,7 @@
 # 흐름: 테스트/빌드(node) → 이미지 빌드&푸시(kaniko) → gitops 리포지토리 태그 갱신 커밋
 #       → Argo CD 가 감지하여 배포 → 배포 완료까지 대기
 #
-# CI/CD Variables (Settings > CI/CD > Variables). README 6.3 참고.
+# CI/CD Variables (Settings > CI/CD > Variables). README 부록 A.2 참고.
 # **Protect variable 은 끈다** — 켜면 보호 브랜치(main)에서만 값이 들어가 develop 잡이 빈 값으로 실패한다.
 #   DOCKER_REGISTRY      nexus-docker.example.com
 #   DOCKER_USER          레지스트리 사용자

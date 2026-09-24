@@ -1,21 +1,22 @@
-# GitLab + Argo CD GitOps CI/CD on Kubernetes
+# GitLab + Jenkins + Argo CD GitOps CI/CD on Kubernetes
 
-GitLab CI 가 **CI**(빌드·테스트·이미지 푸시)를, Argo CD 가 **CD**(클러스터 동기화)를 담당하는
-GitOps 구성. 애플리케이션 코드 리포지토리와 매니페스트 리포지토리를 분리한다.
+GitLab 이 **git 호스트**를, Jenkins 가 **CI**(빌드·테스트·이미지 푸시)를, Argo CD 가
+**CD**(클러스터 동기화)를 담당하는 GitOps 구성. 애플리케이션 코드 리포지토리와
+매니페스트 리포지토리를 분리한다.
 
 ```
-[app repo]  gitlab.example.com/my-group/sample-app
-     │  push → .gitlab-ci.yml: build/test → kaniko push → kustomize edit set image
+[app repo]  gitlab.example.com/my-group/sample-app   (루트에 Jenkinsfile)
+     │  Jenkins Multibranch: npm test/build → kaniko push(Nexus) → kustomize edit set image
      ▼
-[gitops repo] gitlab.example.com/my-group/gitops-manifests   ← 이 리포지토리
+[gitops repo] gitlab.example.com/my-group/gitops-manifests   ← 이 리포지토리의 apps/, manifests/
      │  webhook / polling
      ▼
 [Argo CD] argocd 네임스페이스 → 클러스터에 동기화
 ```
 
-클러스터(kind) → GitLab → Nexus → Argo CD → 파이프라인 순으로 올린다. 아래 `설치 순서` 표가
-전체 흐름이고, 각 장이 그 순서대로 이어진다. CI 를 Jenkins 로 대체하는 구성만
-`부록: Jenkins 자체 호스팅` 으로 뺐다.
+클러스터(kind) → GitLab → Nexus → Argo CD → Jenkins → 파이프라인 순으로 올린다. 아래
+`설치 순서` 표가 전체 흐름이고, 각 장이 그 순서대로 이어진다. Jenkins 대신 GitLab 내장
+CI(러너)로 돌리는 구성은 `부록: GitLab CI 로 돌리기` 로 뺐다.
 
 ## 디렉터리
 
@@ -29,28 +30,28 @@ bootstrap/
       argocd-cm.yaml          url, SSO(dex), kustomize 옵션
       argocd-rbac-cm.yaml     역할/그룹 정책
       argocd-cmd-params-cm.yaml  server.insecure, 튜닝 파라미터
-      argocd-secret.yaml      webhook 시크릿 (예시, 적용 안 함 — README 5)
+      argocd-secret.yaml      webhook 시크릿 (예시, 적용 안 함 — README 6)
       repo-gitlab.yaml        GitLab 리포지토리 자격증명 (예시, 적용 안 함 — README 4.2)
       notifications-cm.yaml   배포 결과를 GitLab commit status 로 회신
       notifications-secret.yaml  (예시, 적용 안 함 — README 4.2)
   coredns/                    *.example.com 을 ingress-nginx 로 보내는 Corefile (1.6)
   metrics-server/             upstream components.yaml + --kubelet-insecure-tls 패치 (1.8)
   image-updater/              (선택) Argo CD Image Updater
-  jenkins/                    (선택) Jenkins 컨트롤러 - GitLab CI 대체
+  jenkins/                    Jenkins 컨트롤러 (CI) — 5장
     namespace.yaml
     local-pv.yaml             단일 노드용 hostPath PV
     rbac.yaml                 에이전트 Pod 생성 권한 (jenkins 네임스페이스 한정)
-    casc.yaml                 JCasC 설정 + 플러그인 목록 + Secret
+    casc.yaml                 JCasC 설정 + 플러그인 목록 (Secret 은 kubectl 로 — 5.2)
     jenkins.yaml              Jenkins StatefulSet + Service + PVC
     ingress.yaml
     nodeport.yaml
-  gitlab/                     GitLab CE 자체 호스팅 (git + CI)
+  gitlab/                     GitLab CE 자체 호스팅 (git 호스트)
     namespace.yaml
     local-pv.yaml             단일 노드용 hostPath PV (config / data)
     gitlab.yaml               GitLab omnibus StatefulSet + Service + PVC (root 비밀번호 Secret 은 kubectl 로 — 2.2)
     ingress.yaml
     nodeport.yaml
-    runner.yaml               GitLab Runner (kubernetes executor) + RBAC
+    runner.yaml               (부록) GitLab Runner — 기본 kustomization 에서 제외
   nexus/                      (선택) Nexus Repository 3 - 컨테이너 레지스트리 + 아티팩트 저장소
     namespace.yaml
     local-pv.yaml             단일 노드용 hostPath PV
@@ -69,10 +70,10 @@ manifests/sample-app/
   overlays/dev/               replicas 1, dev 호스트, develop-<sha> 태그
   overlays/prod/              replicas 3, HPA, PDB, 수동 배포
 
-ci/.gitlab-ci.yml             앱 리포지토리 루트에 복사해서 사용 (GitLab CI)
-ci/Jenkinsfile                앱 리포지토리 루트에 복사해서 사용 (Jenkins, 부록) — 둘 중 하나만
+ci/Jenkinsfile                앱 리포지토리 루트에 복사해서 사용 (7장)
+ci/.gitlab-ci.yml             (부록) GitLab CI 로 돌릴 때 대신 사용 — 둘 중 하나만
 
-sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx 로 서빙) — 6장
+sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx 로 서빙) — 7장
   src/                        App.jsx, main.jsx, App.test.jsx
   public/config.js            로컬 개발용 런타임 설정 (컨테이너에서는 /tmp/config.js 로 대체)
   Dockerfile                  node 빌드 → nginx-unprivileged, UID 10001
@@ -88,13 +89,14 @@ sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx
 |---|---|---|
 | 0. 사전 준비 | placeholder 치환, 토큰 종류 확인 | |
 | 1. 클러스터 준비 | kind 클러스터 + ingress-nginx + hosts + CoreDNS + metrics-server | 이미 쓰는 클러스터가 있으면 건너뛴다 |
-| 2. GitLab CE | git 호스트 + Runner | 최초 기동 8~15분. 가장 무겁다 |
-| 3. Nexus | 컨테이너 레지스트리 | 외부 레지스트리를 쓰면 생략 |
-| 4. Argo CD | CD + 시크릿 + Application 등록 | |
-| 5. webhook | GitLab → Argo CD 푸시 알림 | 없으면 180초 폴링 |
-| 6. 파이프라인 | 앱 리포지토리에 `.gitlab-ci.yml` 배치 | 여기까지 하면 push → 배포가 이어진다 |
+| 2. GitLab CE | git 호스트 + 토큰 발급 | 최초 기동 8~15분. 가장 무겁다 |
+| 3. Nexus | 컨테이너 레지스트리 + 이미지 프록시 | 외부 레지스트리를 쓰면 생략 |
+| 4. Argo CD | CD + 시크릿 + Application 등록 + CI 용 토큰 | |
+| 5. Jenkins | CI 컨트롤러 (JCasC) | 4.4 의 Argo CD 토큰이 필요하다 |
+| 6. webhook | GitLab → Argo CD 푸시 알림 | 없으면 180초 폴링 |
+| 7. 파이프라인 | 앱 리포지토리에 `Jenkinsfile` 배치 + Jenkins 잡 등록 | 여기까지 하면 push → 배포가 이어진다 |
 
-CI 를 Jenkins 로 대체하려면 2~6 을 끝낸 뒤 `부록: Jenkins 자체 호스팅` 으로 간다.
+GitLab CI(러너)로 돌리려면 5 를 건너뛰고 7 대신 `부록: GitLab CI 로 돌리기` 로 간다.
 
 ## 0. 사전 준비
 
@@ -102,9 +104,10 @@ CI 를 Jenkins 로 대체하려면 2~6 을 끝낸 뒤 `부록: Jenkins 자체 �
 - TLS 를 붙인다면 `cert-manager` (ClusterIssuer `letsencrypt-prod`). 로컬 평문 HTTP 라면 필요 없다
 - git 호스트(GitLab) — `2. GitLab CE 설치`
 - 컨테이너 레지스트리 — `3. Nexus Repository 3 설치` 또는 외부 레지스트리
-- GitLab 토큰 2개 (발급은 `2.5 토큰 발급`)
+- GitLab 토큰 2개 (발급은 `2.4 토큰 발급`)
   - Argo CD 용: gitops 프로젝트의 **Deploy token** (`read_repository`)
-  - CI 용: **Project/Group access token** (`write_repository`) — gitops 리포지토리에 커밋
+  - Jenkins 용: 그룹의 **Group access token** (`read_repository` + `write_repository`) —
+    앱 리포지토리 체크아웃과 gitops 리포지토리 커밋을 하나로 한다
 
 전체 파일에서 아래 placeholder 를 치환한다.
 
@@ -121,6 +124,7 @@ Windows hosts 파일(1.5), 클러스터 안에서는 CoreDNS rewrite(1.6)로 같
 |---|---|
 | `gitlab.example.com` | GitLab (브라우저, git clone, Argo CD `repoURL`, API) |
 | `argocd.example.com` | Argo CD UI·CLI (`:80`, 4.3). `grpc.argocd.example.com` 은 TLS 구성용 |
+| `jenkins.example.com` | Jenkins UI (5장) |
 | `nexus.example.com` / `nexus-docker.example.com` | Nexus UI / Docker 레지스트리(이미지 주소) |
 | `sample-app.example.com` / `sample-app.dev.example.com` | 서비스 호스트 |
 
@@ -416,7 +420,7 @@ metrics-server 가 제공하는데 kind 에는 기본으로 들어 있지 않다
 `FailedGetResourceMetric ... (get pods.metrics.k8s.io)` 경고를 내며 `<unknown>` 으로 남는다.
 **kubectl 로 보면 파드는 minReplicas 로 떠 있어 문제없어 보이지만, Argo CD 는 이 HPA 를
 Degraded 로 판정한다.** 그래서 앱 Health 가 Degraded 가 되고 CI 의
-`argocd app wait --health` 가 실패한다(6.5).
+`argocd app wait --health` 가 실패한다(7.5).
 
 ```bash
 kubectl apply -k bootstrap/metrics-server
@@ -438,8 +442,9 @@ kubectl top nodes
 
 ## 2. GitLab CE 설치
 
-이 구성의 git 호스트 + CI 를 클러스터 안에 올린다. CE 는 무료이고 CI 가 내장돼 있어
-러너만 등록하면 별도 CI 컴포넌트가 필요 없다.
+이 구성의 git 호스트를 클러스터 안에 올린다. 앱 리포지토리와 gitops 리포지토리가 모두
+여기에 있다. CE 에는 CI 도 내장돼 있지만 이 구성의 CI 는 Jenkins(5장)가 맡는다
+(GitLab CI 로 돌리려면 `부록: GitLab CI 로 돌리기`).
 
 `bootstrap/gitlab/` 은 omnibus 이미지(`gitlab/gitlab-ce`) 하나로 PostgreSQL·Redis·
 Gitaly·nginx 를 모두 띄우는 단일 Pod 구성이다. 공식 Helm 차트(`gitlab/gitlab`)는
@@ -454,7 +459,7 @@ Gitaly·nginx 를 모두 띄우는 단일 Pod 구성이다. 공식 Helm 차트(`
 - **메모리.** 이 리포지토리에서 가장 무거운 구성요소다. 컨테이너 요청 4Gi / 제한 6Gi 를
   잡았고 이는 `puma['worker_processes'] = 2`, `sidekiq['max_concurrency'] = 9`,
   `prometheus_monitoring` 비활성화를 전제로 한 값이다. Argo CD 와 함께 올린다면
-  노드 메모리 **16GB 이상**을 권장한다. 러너 잡 Pod 는 그 위에 추가로 뜬다.
+  노드 메모리 **16GB 이상**을 권장한다. Jenkins 에이전트 Pod 는 그 위에 추가로 뜬다.
 - **스토리지.** `/var/opt/gitlab` 에 git 리포지토리 + DB + 아티팩트가 모두 들어간다.
   동적 프로비저너가 없으면 디렉터리를 미리 만든다. kind 에서는 노드 컨테이너가
   아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
@@ -620,68 +625,38 @@ git clone ssh://git@localhost:30022/my-group/gitops-manifests.git
 HTTPS(평문 HTTP) clone 만 쓴다면 `nodeport.yaml` 의 ssh 포트와
 `gitlab_shell_ssh_port` 설정은 지워도 된다.
 
-### 2.4 GitLab Runner 등록
+### 2.4 토큰 발급
 
-GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
-러너는 토큰이 있어야 기동되므로 **GitLab 이 뜬 뒤에** 적용한다.
-
-1. **토큰 발급** — **Admin Area > CI/CD > Runners > New instance runner**
-   - Tags: `build`
-   - *Run untagged jobs* 체크 (태그 없는 잡도 받게)
-   - **Create runner** → 화면의 authentication token(`glrt-...`)을 복사한다.
-     이 화면을 벗어나면 토큰을 다시 볼 수 없다(다시 만들어야 한다).
-     그 아래 `gitlab-runner register` 안내는 따르지 않는다 — 토큰을 config.toml 에 바로 넣는 방식이라 필요 없다.
-
-2. **토큰 Secret 생성** — `runner.yaml` 에는 토큰을 적지 않는다(4.2 와 같은 이유).
-
-```bash
-read -rsp 'runner token (glrt-...): ' RT; echo
-# glrt- 로 시작하지 않으면(빈 값·잘못 붙여 넣기) 만들지 않는다
-[[ $RT == glrt-* ]] && kubectl -n gitlab create secret generic gitlab-runner-secrets \
-  --from-literal=RUNNER_TOKEN="$RT" --dry-run=client -o yaml | kubectl apply -f -
-unset RT
-kubectl -n gitlab get secret gitlab-runner-secrets
-```
-
-3. **러너 적용** — `runner.yaml` 은 `kustomization.yaml` 에 이미 들어 있다.
-   GitLab 본체도 같은 kustomization 이므로, 러너 외에 바뀌는 게 없는지 먼저 diff 로 본다.
-
-```bash
-kubectl kustomize bootstrap/gitlab | kubectl diff -f - | grep -E '^(\+\+\+|---) '
-# gitlab-runner 관련 리소스만 나오면 적용한다. gitlab StatefulSet 등이 보이면 멈추고 내용을 확인한다
-kubectl kustomize bootstrap/gitlab | kubectl apply -f -
-kubectl -n gitlab rollout status deploy/gitlab-runner
-kubectl -n gitlab logs deploy/gitlab-runner --tail=20
-```
-
-로그에 `Configuration loaded` 와 `Starting multi-runner` 가 뜨고, Admin Area > CI/CD > Runners 목록에서
-러너가 **Online**(초록 점)이면 성공이다. glrt 토큰은 등록 절차가 없으므로 `Registering runner` 줄은 나오지 않는다.
-잡 Pod 는 `gitlab` 네임스페이스에 `gitlab-runner-job` 서비스 어카운트로 뜬다(권한 없음).
-
-> - 토큰이 틀리면 로그에 `403 Forbidden` 이 반복된다. 2 를 다시 실행하고
->   `kubectl -n gitlab rollout restart deploy/gitlab-runner` — 환경변수는 Pod 시작 때만 읽힌다.
-> - Pod 가 `CreateContainerConfigError` 면 2 의 Secret 이 없는 것이다.
-> - **잡 파드의 이미지는 Nexus(3장)를 거친다.** `config.toml` 의 `image` 와 `helper_image` 가
->   `nexus-docker-group.example.com/...` 을 가리킨다. 러너 자체는 Nexus 없이도 Online 이 되지만,
->   **잡은 3장을 끝낸 뒤에야 돈다.** 여기서 먼저 잡을 돌려 보고 싶으면 두 줄을 각각
->   `alpine:3.22`, `registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.11.0`
->   으로 되돌리면 된다(외부 인터넷 필요).
-> - **러너 버전을 올릴 때는 `helper_image` 태그도 같이 올린다.** 본체(`gitlab/gitlab-runner:v17.11.0`)와
->   helper 의 버전이 어긋나면 잡이 실패한다. helper 는 `.gitlab-ci.yml` 에 안 보이는 숨은 컨테이너라
->   `git clone` 단계에서 엉뚱하게 터진다.
-
-### 2.5 토큰 발급
-
-Argo CD 와 CI 가 쓸 토큰을 이 단계에서 미리 발급해 둔다. GitLab 은 용도별로 토큰이 나뉜다.
+Argo CD 와 Jenkins 가 쓸 토큰을 발급해 둔다. GitLab 은 용도별로 토큰이 나뉜다.
+먼저 UI 에서 그룹 `my-group` 을 만든다. Group access token 은 그룹만 있으면 발급되고,
+Deploy token 은 프로젝트 단위라 4.5-1 에서 gitops 프로젝트를 만든 직후 발급한다.
 
 | 용도 | 종류 | 발급 위치 | 스코프 |
 |---|---|---|---|
 | Argo CD 가 gitops 리포지토리를 읽기 | Deploy token | gitops 프로젝트 > Settings > Repository > Deploy tokens | `read_repository` |
-| CI 가 gitops 리포지토리에 커밋 | Project access token (**role: Maintainer**) | gitops 프로젝트 > Settings > Access tokens | `write_repository` |
+| Jenkins 가 앱 리포지토리를 체크아웃하고 gitops 리포지토리에 커밋 | Group access token (이름 `ci-bot`, **role: Maintainer**) | 그룹 > Settings > Access tokens | `read_repository`, `write_repository` |
 | (선택) ApplicationSet 이 그룹을 스캔 | Group access token | 그룹 > Settings > Access tokens | `read_api`, `read_repository` |
 
-발급한 값은 `4.2 시크릿 주입` 에서 Argo CD 에, `6. 앱 리포지토리에 파이프라인 배치` 에서
-GitLab CI/CD 변수로 들어간다.
+- **Jenkins 토큰을 그룹 단위로 발급하는 이유.** 앱 리포지토리는 Private 이라 익명 체크아웃이
+  안 되고(`info/refs` → 401), gitops 프로젝트 전용 토큰으로는 앱 리포지토리를 읽을 수 없다.
+  그룹 토큰 하나면 두 리포지토리를 모두 다루고, 앱 리포지토리가 늘어도 그대로 쓴다. 대가는
+  권한 범위가 그룹 전체로 넓어지는 것이다.
+- **role 은 Maintainer.** gitops 리포지토리의 `main` 이 보호 브랜치라 Developer 로는 push 가
+  `pre-receive hook declined` 로 거부된다.
+- git 인증에 쓰는 **사용자명은 토큰 이름(`ci-bot`)** 이다. 값은 발급 화면을 벗어나면 다시 볼 수
+  없으므로 화면에 보이지 않게 받아 권한 600 파일로 저장한다. `cat > 파일` 로 붙여 넣으면 값이
+  터미널에 그대로 찍힌다.
+
+```bash
+read -rsp 'ci-bot token: ' T; echo
+[[ $T == glpat-* ]] && ( umask 077; printf '%s' "$T" > ~/gitlab-group-token.txt )
+unset T
+ls -l ~/gitlab-group-token.txt      # 크기만 확인. 내용은 출력하지 않는다
+```
+
+값이 터미널·채팅·스크린샷에 한 번이라도 노출됐다면 **Revoke 후 재발급**한다.
+발급한 값은 `4.2 시크릿 주입` 에서 Argo CD 에, `5.2 시크릿` 에서 Jenkins 에 들어간다.
+토큰이 두 리포지토리에 실제로 통하는지는 두 프로젝트를 모두 만든 뒤 7.2 에서 확인한다.
 
 ## 3. Nexus Repository 3 설치
 
@@ -690,7 +665,7 @@ GitLab CI/CD 변수로 들어간다.
 Docker Hub / Maven Central / npmjs 프록시로 쓴다.
 
 ```
-[CI 잡]           kaniko  ──push──▶ [Nexus docker-hosted :8082]
+[Jenkins 에이전트] kaniko  ──push──▶ [Nexus docker-hosted :8082]
                                           │
 [쿠버네티스 노드]  image pull ◀───────────┘  (regcred)
 [빌드 컨테이너]   maven/npm ──▶ [Nexus maven-group / npm-group :8081]
@@ -741,7 +716,9 @@ kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password; echo
 |---|---|---|
 | `docker-hosted` | docker (hosted) | HTTP 커넥터 **8082**, Deployment policy `Allow redeploy` |
 | `docker-hub` | docker (proxy) | Remote storage `https://registry-1.docker.io`, Docker Index `Use Docker Hub` |
-| `docker-group` | docker (group) | HTTP 커넥터 **8083**, 멤버 `docker-hosted`, `docker-hub` |
+| `gcr-proxy` | docker (proxy) | Remote storage `https://gcr.io`, Docker Index `Use proxy registry` |
+| `quay-proxy` | docker (proxy) | Remote storage `https://quay.io`, Docker Index `Use proxy registry` |
+| `docker-group` | docker (group) | HTTP 커넥터 **8083**, 멤버 `docker-hosted` → `docker-hub` → `gcr-proxy` → `quay-proxy` (이 순서) |
 | `maven-central` | maven2 (proxy) | Remote storage `https://repo1.maven.org/maven2/` |
 | `maven-releases` / `maven-snapshots` | maven2 (hosted) | 기본 생성돼 있음 |
 | `maven-group` | maven2 (group) | 위 셋을 멤버로 |
@@ -749,6 +726,17 @@ kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password; echo
 
 포트 8082/8083 은 **커넥터를 만들어야 열린다.** Service/NodePort 에는 이미
 포트가 뚫려 있으므로 UI 설정만 하면 된다.
+
+`gcr-proxy`·`quay-proxy` 는 Jenkins 에이전트 이미지(5.4) 때문에 필요하다. kaniko 는 `gcr.io`,
+argocd CLI 는 `quay.io` 에 있다. `docker-group` 의 **멤버 순서를 표대로 둔다.** Docker Hub 에도
+`argoproj/argocd` 리포지토리가 있어서(단 `v3.5.2` 태그는 없다) 순서를 바꾸면 엉뚱한 이미지를
+받을 수 있다. 프록시를 만들지 않을 거면 `bootstrap/jenkins/casc.yaml` 의 두 이미지를
+`gcr.io/...`, `quay.io/...` 직행으로 되돌린다(외부 인터넷 필요).
+
+> UI 대신 REST API 로도 만들 수 있다. 프록시는
+> `POST /service/rest/v1/repositories/docker/proxy` (`dockerProxy.indexType=REGISTRY` 가
+> *Use proxy registry*), 그룹 멤버 변경은 `GET` 으로 받은 설정의 `group.memberNames` 를 고쳐
+> 전체를 `PUT` 한다. 재현성은 API 쪽이 낫다.
 
 `docker login` 을 쓰려면 **Settings > Security > Realms** 에서
 `Docker Bearer Token Realm` 을 Active 로 옮긴다.
@@ -769,6 +757,9 @@ kubectl -n nexus exec sts/nexus -- cat /nexus-data/admin.password; echo
 
 ```bash
 docker exec devops-worker crictl pull nexus-docker-group.example.com/library/alpine:3.20
+# 프록시 경로 — Jenkins 에이전트가 쓰는 이미지
+docker exec devops-worker crictl pull nexus-docker-group.example.com/kaniko-project/executor:v1.23.2-debug
+docker exec devops-worker crictl pull nexus-docker-group.example.com/argoproj/argocd:v3.5.2
 ```
 
 설정 전에는 `no basic auth credentials` 로 실패한다. 경로는 정상이고 인증에서 막힌 것이다.
@@ -781,7 +772,7 @@ Docker/containerd 는 레지스트리에 HTTPS 로 접속하므로, 평문 레�
 | 주체 | 무엇을 하나 | 주소 | 예외 등록 방법 |
 |---|---|---|---|
 | 노드의 containerd | 이미지 pull | `nexus-docker.example.com` | `kind-config.yaml` 의 `containerdConfigPatches` |
-| kaniko (CI 잡 Pod) | 이미지 push | `nexus-docker.example.com` | CoreDNS rewrite(1.6) + kaniko `--insecure` |
+| kaniko (Jenkins 에이전트 Pod) | 이미지 push | `nexus-docker.example.com` | CoreDNS rewrite(1.6) + kaniko `--insecure` |
 | WSL/Windows 의 docker | 수동 login/push | `localhost:30082` | 없음 (Docker 가 localhost 를 기본 insecure 취급) |
 
 > **kind 에서는 아래 `daemon.json` · `certs.d` 절차를 따라 하지 않는다.** 노드가
@@ -797,7 +788,7 @@ Docker/containerd 는 레지스트리에 HTTPS 로 접속하므로, 평문 레�
   의 `nodeport.yaml` 이 기본 활성인 이유가 이것이다(1.7).
 - **kaniko push.** kaniko 는 containerd 를 거치지 않고 직접 레지스트리에 붙는다.
   이름은 CoreDNS rewrite(1.6)가 ingress-nginx 컨트롤러로 보내고, 평문이라
-  `--insecure`(또는 `--insecure-registry`)가 필요하다. `ci/.gitlab-ci.yml` 에
+  `--insecure`(또는 `--insecure-registry`)가 필요하다. `ci/Jenkinsfile` 에
   이미 들어 있다.
 - **클러스터 밖 수동 push.** `localhost:30082` 를 쓴다. Docker 는 `localhost` 를
   기본으로 insecure 취급하므로 데몬 설정이 필요 없다.
@@ -856,20 +847,9 @@ systemctl restart containerd
 
 ### 3.5 레지스트리 연동 (CI / 앱 네임스페이스)
 
-**1. CI 의 push 자격증명** — GitLab CI 는 `DOCKER_REGISTRY` / `DOCKER_USER` /
-`DOCKER_PASSWORD` 변수로 kaniko 의 `config.json` 을 만든다(`ci/.gitlab-ci.yml` 참고).
-Nexus 를 쓴다면 `DOCKER_REGISTRY` 를 `nexus-docker.example.com` 으로 둔다.
-
-Jenkins 를 쓴다면 대신 네임스페이스에 시크릿을 만든다.
-
-```bash
-kubectl -n jenkins create secret docker-registry regcred \
-  --docker-server=nexus-docker.example.com \
-  --docker-username='<nexus-user>' --docker-password='<password>'
-```
-
-`bootstrap/jenkins/casc.yaml` 의 Pod 템플릿 `volumes:` 주석을 해제하면
-kaniko 가 `/kaniko/.docker` 로 이 시크릿을 읽는다.
+**1. CI 의 push 자격증명** — Jenkins 의 `jenkins-secrets` 에 `NEXUS_USER` / `NEXUS_PASSWORD`
+로 넣는다(5.2). Jenkinsfile 이 이 값(자격증명 `nexus-registry`)으로 kaniko 의
+`/kaniko/.docker/config.json` 을 직접 만든다. `jenkins` 네임스페이스에 `regcred` 는 만들지 않는다(5.2).
 
 **2. 앱 네임스페이스 pull secret** — 이미지를 내려받을 네임스페이스마다 필요하다.
 
@@ -990,11 +970,11 @@ kubectl -n sample-app-dev create secret docker-registry regcred \
 `bootstrap/argocd/configs/repo-gitlab.yaml` 은 `configs/kustomization.yaml` 의 resources 에서
 **기본 제외**돼 있다. placeholder 인 채로 적용하면 같은 이름의 시크릿이 먼저 생겨 위
 `create` 가 `AlreadyExists` 로 실패하고, 이후 `apply` 할 때마다 실제 값을 덮어쓴다.
-토큰이 아직 없어도(2.5) 4.1 설치는 먼저 진행해도 된다.
+토큰이 아직 없어도(2.4) 4.1 설치는 먼저 진행해도 된다.
 
 같은 이유로 `configs/argocd-secret.yaml`(webhook 시크릿)과 `configs/notifications-secret.yaml`
 (알림용 GitLab 토큰)도 patches 에서 **기본 제외**돼 있다. 이 둘은 install.yaml 에 이미 있는
-Secret 이라 `create` 대신 `patch` 로 키만 넣는다. webhook 시크릿은 5장에서 넣는다.
+Secret 이라 `create` 대신 `patch` 로 키만 넣는다. webhook 시크릿은 6장에서 넣는다.
 
 ```bash
 # (선택) 알림용 GitLab 토큰 — commit status 를 기록할 프로젝트의 access token (api 스코프)
@@ -1039,12 +1019,16 @@ kubectl -n argocd delete secret argocd-initial-admin-secret
 
 ### 4.4 CI 전용 계정 토큰 발급
 
-`argocd-cm` 에 `accounts.cicd: apiKey, login` 이 이미 설정돼 있다.
+`argocd-cm` 에 `accounts.cicd: apiKey, login` 이 이미 설정돼 있고, `argocd-rbac-cm` 이 이 계정에
+`role:ci`(앱 조회·sync)를 준다. Jenkins 가 `argocd app sync` / `wait` 에 쓴다.
 
 ```bash
-argocd account generate-token --account cicd --grpc-web
-# 출력된 토큰을 GitLab 의 Settings > CI/CD > Variables 에 ARGOCD_AUTH_TOKEN (masked) 으로 등록
+( umask 077; argocd account generate-token --account cicd --grpc-web > ~/cicd-argocd-token.txt )
+ls -l ~/cicd-argocd-token.txt      # 5.2 에서 jenkins-secrets 의 ARGOCD_AUTH_TOKEN 으로 들어간다
 ```
+
+> 이 토큰은 admin 의 CLI 로그인 세션(4.3)과 별개다. admin 세션은 24시간이면 만료돼
+> `token is expired` 가 나고 `argocd login` 을 다시 하면 되지만, `cicd` 토큰은 만료 없이 발급된다.
 
 ### 4.5 애플리케이션 등록
 
@@ -1055,6 +1039,7 @@ Argo CD 는 이 리포지토리가 아니라 **GitLab 의 `my-group/gitops-manif
 `gitops-manifests` 를 만든다. *Initialize repository with a README* 는 **끈다**(켜면 첫 push 가 거부된다).
 이 리포지토리의 `apps/` 와 `manifests/` 만 복사해 **루트에** 올린다. 이후 CI 가 이미지 태그를
 이 리포지토리에 직접 커밋하므로, cicd 리포지토리와는 별개 이력으로 관리한다.
+프로젝트를 만들었으면 2.4 의 **Deploy token** 을 이 프로젝트에서 발급한다.
 
 ```bash
 # WSL 에서 처음 커밋한다면 작성자부터 설정한다(없으면 "Author identity unknown" 으로 실패)
@@ -1069,7 +1054,7 @@ git remote add origin http://gitlab.example.com/my-group/gitops-manifests.git
 git push -u origin main      # GitLab 사용자명 + 비밀번호(또는 write_repository 토큰)
 ```
 
-**2. Argo CD 에 리포지토리 자격증명 등록** — 2.5 의 Deploy token(`read_repository`)으로 4.2-A 를 실행한다.
+**2. Argo CD 에 리포지토리 자격증명 등록** — 2.4 의 Deploy token(`read_repository`)으로 4.2-A 를 실행한다.
 토큰이 셸 기록에 남지 않게 `read` 로 받는다. Deploy token 의 username 은 발급 화면에 나오는
 `gitlab+deploy-token-<N>` 형태다(GitLab 로그인 계정이 아니다). 발급 화면을 닫으면 토큰은 다시 볼 수 없다.
 
@@ -1103,7 +1088,7 @@ argocd app list --grpc-web
 | Application | SYNC | HEALTH | 이유 |
 |---|---|---|---|
 | `bootstrap` | Synced | Healthy | |
-| `sample-app-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 6단계 CI 가 첫 태그를 커밋하면 풀린다 |
+| `sample-app-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 7장에서 Jenkins 가 첫 태그를 커밋하면 풀린다 |
 | `sample-app-prod` | OutOfSync | Missing | 수동 동기화 대상(`automated` 없음) |
 
 - `apps/applicationset-gitlab.yaml` 은 `app-of-apps.yaml` 의 `exclude` 로 **기본 제외**된다.
@@ -1111,7 +1096,135 @@ argocd app list --grpc-web
 - `argocd repo list` 가 실패하면 Application 이 `ComparisonError` / `repository not found` 가 된다.
   Deploy token 의 스코프(`read_repository`)와 URL 끝의 `.git` 을 확인한다.
 
-## 5. GitLab webhook 연결
+## 5. Jenkins 설치
+
+`bootstrap/jenkins/` 는 설치 마법사 없이 **JCasC(Configuration as Code)** 로 기동하는
+Jenkins 컨트롤러 구성이다. 관리자 계정·자격증명·kubernetes 클라우드·에이전트 Pod 템플릿이
+모두 `casc.yaml` 에 들어 있다. 컨트롤러는 빌드를 돌리지 않고(`numExecutors: 0`), 빌드마다
+kubernetes 플러그인이 `jenkins` 네임스페이스에 에이전트 Pod 를 띄운다(5.4).
+
+Jenkins 는 4장까지 끝난 뒤에 올린다. 시크릿에 Argo CD `cicd` 토큰(4.4)과 GitLab 그룹 토큰(2.4)이
+들어가고, 에이전트 이미지는 Nexus 프록시(3.3)로 받는다.
+
+### 5.1 사전 조건
+
+1. **메모리** — 컨트롤러가 요청 1Gi / 제한 2Gi, 여기에 빌드 중에만 에이전트 Pod 분량이 더 붙는다.
+   GitLab + Nexus + Argo CD 와 같이 돌리므로 노드 메모리 16GB 이상을 권장한다.
+
+2. **스토리지 디렉터리** — 동적 프로비저너가 없으면 미리 만든다. kind 에서는 노드
+   컨테이너가 아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
+
+   ```bash
+   mkdir -p /data/jenkins
+   sudo chown -R 1000:1000 /data/jenkins     # jenkins 컨테이너 UID
+   ```
+
+3. **hosts 에 `jenkins.example.com`** — Windows 와 WSL 양쪽(1.5). CoreDNS rewrite 는
+   이미 들어 있다(`bootstrap/coredns/coredns-cm.yaml`).
+
+4. **Nexus 프록시** — 3.3 의 `gcr-proxy` / `quay-proxy` 가 `docker-group` 에 들어가 있어야
+   에이전트 Pod 가 뜬다. 컨트롤러 기동에는 필요 없으므로 **첫 빌드(7장) 전까지만** 하면 된다.
+
+### 5.2 시크릿
+
+값은 매니페스트에 적지 않는다(2.2·4.2 와 같은 이유 — 이 리포지토리는 공개다). 컨트롤러가
+`envFrom` 으로 읽고, JCasC 가 `${...}` 자리에 넣어 자격증명 3개를 만든다.
+
+| 키 | 값 | JCasC 자격증명 |
+|---|---|---|
+| `JENKINS_ADMIN_ID` / `JENKINS_ADMIN_PASSWORD` | Jenkins 관리자 계정 | (로그인 계정) |
+| `GITOPS_USER` / `GITOPS_TOKEN` | `ci-bot` / 2.4 의 Group access token | `gitops-repo` — 앱 체크아웃 + gitops push |
+| `ARGOCD_AUTH_TOKEN` | 4.4 의 `cicd` 토큰 | `argocd-auth-token` |
+| `NEXUS_USER` / `NEXUS_PASSWORD` | Nexus docker-hosted push 계정 | `nexus-registry` — kaniko |
+
+```bash
+kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
+
+read -rsp 'jenkins admin password: ' JP; echo
+read -rp  'nexus user: ' NU; read -rsp 'nexus password: ' NP; echo
+# 파일로 보관한 토큰은 끝의 줄바꿈을 떼고 넣는다(섞이면 인증이 401 로 실패한다)
+kubectl -n jenkins create secret generic jenkins-secrets \
+  --from-literal=JENKINS_ADMIN_ID='admin' \
+  --from-literal=JENKINS_ADMIN_PASSWORD="$JP" \
+  --from-literal=GITOPS_USER='ci-bot' \
+  --from-literal=GITOPS_TOKEN="$(tr -d '\n' < ~/gitlab-group-token.txt)" \
+  --from-literal=ARGOCD_AUTH_TOKEN="$(tr -d '\n' < ~/cicd-argocd-token.txt)" \
+  --from-literal=NEXUS_USER="$NU" \
+  --from-literal=NEXUS_PASSWORD="$NP" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset JP NU NP
+kubectl -n jenkins get secret jenkins-secrets      # DATA 7
+```
+
+- `GITOPS_USER` 는 비밀이 아니다. 그룹 토큰의 **이름**이고, git 인증 사용자명으로 쓰인다(2.4).
+- **`regcred` 는 만들지 않는다.** kaniko 의 `/kaniko/.docker/config.json` 은 Jenkinsfile 이
+  `nexus-registry` 자격증명으로 직접 만든다. `docker-registry` 타입 Secret 을 Pod 템플릿의
+  `secretVolume` 으로 붙이면 파일 이름이 `.dockerconfigjson` 이 되어 kaniko 가 찾지 못한다.
+  에이전트 이미지는 `docker-group` 익명 pull 로 받으므로 `imagePullSecrets` 도 필요 없다.
+- **값을 나중에 바꾸면 컨트롤러를 재시작한다.** `envFrom` 은 파드가 뜰 때만 읽힌다.
+
+  ```bash
+  kubectl -n jenkins rollout restart sts/jenkins
+  kubectl -n jenkins exec jenkins-0 -- printenv GITOPS_USER     # 새 값인지 확인
+  ```
+
+### 5.3 설치
+
+```bash
+kubectl kustomize bootstrap/jenkins | kubectl apply -f -
+
+# 최초 기동은 플러그인 다운로드로 1~3분 걸린다
+kubectl -n jenkins logs -f sts/jenkins -c install-plugins
+kubectl -n jenkins get pods -w                     # jenkins-0 1/1
+
+curl -sS -o /dev/null -w '%{http_code}\n' http://jenkins.example.com/login   # 200
+```
+
+브라우저에서 `http://jenkins.example.com` 에 5.2 의 관리자 계정으로 로그인한다.
+**Manage Jenkins > Credentials** 에 `gitops-repo` / `argocd-auth-token` / `nexus-registry` 3개가,
+**Manage Jenkins > Clouds > kubernetes** 에 Pod 템플릿 `build` 가 보이면 된다.
+
+> **플러그인은 외부(updates.jenkins.io)에서 받는다.** 이미지는 Nexus 를 거치지만
+> `install-plugins` 초기화 컨테이너는 그렇지 않아, 파드가 재생성될 때마다 인터넷이
+> 필요하다. `Temporary failure in name resolution` 으로 CrashLoopBackOff 면 WSL DNS 문제다.
+> `plugins.txt` 에 버전을 고정하지 않고 `--latest true` 를 쓰므로 받는 시점에 따라
+> 플러그인 버전이 달라질 수 있다.
+
+> **kind 에서는 NodePort(`http://<노드IP>:30808`)로 접속할 수 없다.**
+> `kind-config.yaml` 에 30808 매핑이 없어 노드 컨테이너 안에서만 열린다.
+> `nodeport.yaml` 은 주석 처리된 상태가 기본값이고, 그대로 둔다.
+
+**`casc.yaml` 을 고친 뒤에는** 적용하고 컨트롤러에 다시 읽힌다. 재시작하지 않아도 된다.
+ConfigMap 이 파드 안 파일에 반영되기까지 1분 정도 걸리므로 먼저 확인한다.
+
+```bash
+kubectl kustomize bootstrap/jenkins | kubectl apply -f -
+kubectl -n jenkins exec jenkins-0 -- cat /var/jenkins_home/casc.d/jenkins.yaml | grep <바꾼 줄>
+# 반영됐으면 Manage Jenkins > Configuration as Code > Reload existing configuration
+```
+
+`plugins.txt` 를 바꿨다면 재시작해야 한다(`rollout restart sts/jenkins`).
+
+### 5.4 에이전트 Pod 템플릿
+
+Jenkinsfile 의 `agent { label 'build' }` 가 `casc.yaml` 의 `build` 템플릿을 쓴다.
+컨테이너 4개(+ Jenkins 가 붙이는 `jnlp`)가 한 Pod 에 뜨고 워크스페이스를 공유한다.
+
+| 컨테이너 | 이미지 (`nexus-docker-group.example.com/...`) | 단계 |
+|---|---|---|
+| `node` | `library/node:22-alpine` | `npm ci` / `npm test` / `npm run build` |
+| `kaniko` | `kaniko-project/executor:v1.23.2-debug` (gcr-proxy) | 이미지 빌드·Nexus push |
+| `tools` | `alpine/k8s:1.30.2` | `kustomize edit set image` → gitops 커밋 |
+| `argocd` | `argoproj/argocd:v3.5.2` (quay-proxy) | `argocd app sync` / `wait` |
+
+- `argocd` 태그는 서버(`bootstrap/argocd/kustomization.yaml`)와 맞춘다.
+- **`argocd` 컨테이너만 `runAsUser: "0"` 이 붙어 있다.** 이 이미지는 기본이 uid 999 인데,
+  워크스페이스는 `jnlp`(uid 1000)가 만들기 때문에 999 가 `@tmp/durable-*` 에 결과 파일을 쓰지
+  못한다. 그러면 sh 스텝이 `process apparently never started` 로 **5분 뒤** 실패한다. 이미지
+  push 와 gitops 커밋은 앞 단계에서 이미 끝났으므로 dev 는 배포되는데 빌드만 실패로 남는다.
+  나머지 세 이미지는 원래 root 로 돈다.
+
+## 6. GitLab webhook 연결 (gitops → Argo CD)
 
 **1. webhook 시크릿 만들기** — 임의 값을 만들어 `argocd-secret` 에 넣는다. 파일(`configs/argocd-secret.yaml`)에는
 적지 않는다(4.2). GitLab 에 붙여 넣을 수 있게 권한 600 파일로 보관한다.
@@ -1159,23 +1272,29 @@ refresh 를 트리거한다. payload 의 URL 은 GitLab `external_url`(`http://g
 
 webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
 
-## 6. 앱 리포지토리에 파이프라인 배치
+## 7. 앱 리포지토리에 파이프라인 배치
 
-`sample-app/`(React 템플릿)과 `ci/.gitlab-ci.yml` 을 GitLab 의 `my-group/sample-app` 리포지토리 루트에 올린다.
-`develop` push 는 dev 로 자동 배포, `main` push 는 수동 승인 후 prod 로 배포된다.
-러너가 없으면 잡이 pending 상태로 멈추므로 `2.4 GitLab Runner 등록` 을 먼저 끝낸다.
+`sample-app/`(React 템플릿)과 `ci/Jenkinsfile` 을 GitLab 의 `my-group/sample-app` 리포지토리
+루트에 올리고, Jenkins 에 Multibranch Pipeline 으로 등록한다. `develop` 은 dev 로 자동 배포,
+`main` 은 Jenkins 에서 승인한 뒤 prod 로 배포된다.
 
 ```
-build-test(node: npm ci/test/build) → docker-build-push(kaniko → Nexus)
-  → deploy-dev|prod(gitops-manifests 의 overlay 태그 커밋) → wait-dev|prod(Argo CD Synced+Healthy 대기)
+준비 → 테스트·빌드(node) → 이미지 빌드·푸시(kaniko → Nexus)
+  → [main 만] prod 승인(input) → gitops 태그 갱신(tools) → 배포 대기(argocd: Synced + Healthy)
 ```
+
+| 브랜치 | 이미지 태그 | 배포 | Argo CD |
+|---|---|---|---|
+| `develop` | `develop-<sha 8자리>` | dev (`overlays/dev`) | 자동 동기화 — Jenkins 는 기다리기만 한다 |
+| `main` | `main-<sha 8자리>` | prod (`overlays/prod`), **승인 후** | 수동 동기화 — Jenkins 가 `argocd app sync` 를 건다 |
+| 그 외 | — | 테스트·빌드까지만 | — |
 
 앱은 정적 파일을 nginx 가 서빙한다. 매니페스트(`manifests/sample-app/base/deployment.yaml`)의 조건 —
 포트 8080, `/healthz`, UID 10001, **읽기 전용 루트 파일시스템** — 에 맞춰 `nginx.conf` 가 쓰기 경로를 전부
 `/tmp`(emptyDir)로 옮긴다. 화면에는 `environment`(Deployment 의 `APP_ENV`, 시작 시 `/tmp/config.js` 로 주입)와
 `version`(빌드 때 넣은 이미지 태그)이 보여서, 같은 이미지가 dev/prod 로 흘러가는 것을 눈으로 확인할 수 있다.
 
-### 6.1 로컬에서 먼저 확인 (WSL)
+### 7.1 로컬에서 먼저 확인 (WSL)
 
 `npm ci` 에 필요한 `package-lock.json` 을 만들고, 이미지가 **읽기 전용 + UID 10001** 로 뜨는지 CI 전에 본다.
 WSL 에 node 가 없어도 되도록 컨테이너로 돌린다.
@@ -1184,7 +1303,7 @@ WSL 에 node 가 없어도 되도록 컨테이너로 돌린다.
 mkdir -p ~/workspace/sample-app && cd ~/workspace/sample-app
 git init -b main
 cp -r ~/workspace/cicd/sample-app/. .
-cp ~/workspace/cicd/ci/.gitlab-ci.yml .
+cp ~/workspace/cicd/ci/Jenkinsfile .
 
 # package-lock.json 생성 + 테스트
 docker run --rm -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/.npm -v "$PWD":/app -w /app \
@@ -1200,99 +1319,129 @@ docker logs sample-app-test | tail -5     # Read-only file system 오류가 없�
 docker rm -f sample-app-test
 ```
 
-### 6.2 GitLab 준비
+### 7.2 GitLab 프로젝트 만들고 push
 
-1. **프로젝트** — `my-group` 에 `sample-app` (Private, *Initialize repository with a README* 끔).
-2. **gitops 커밋용 토큰** — `my-group/gitops-manifests` > Settings > **Access tokens** > Add new token
-   - Role: **Maintainer** — `main` 이 보호 브랜치라 Developer 로는 push 가 `pre-receive hook declined` 로 거부된다
-   - Scopes: `write_repository`
-   - 발급 화면을 벗어나면 다시 볼 수 없다. 화면에 보이지 않게 받아 권한 600 파일로 저장한다.
-     `cat > 파일` 로 붙여 넣으면 값이 터미널에 그대로 찍히고, 확인하려고 `cat` 하면 한 번 더 노출된다.
+`my-group` 에 `sample-app` 프로젝트를 만든다(Private, *Initialize repository with a README* 끔).
+두 프로젝트가 모두 생겼으니 2.4 의 그룹 토큰이 둘 다에 통하는지 확인한다.
 
-     ```bash
-     read -rsp 'gitops token: ' T; echo
-     [[ $T == glpat-* ]] && ( umask 077; printf '%s' "$T" > ~/gitops-ci-token.txt )
-     unset T
-     ls -l ~/gitops-ci-token.txt      # 크기만 확인. 내용은 출력하지 않는다
-     ```
-
-     값이 터미널·채팅·스크린샷에 한 번이라도 노출됐다면 **Revoke 후 재발급**한다.
-
-### 6.3 CI/CD 변수 등록
-
-`my-group/sample-app` > Settings > CI/CD > **Variables** > Add variable. **모든 변수에서 *Protect variable* 체크를 끈다.**
-켜 두면 보호 브랜치(`main`)에서만 값이 들어가 `develop` 파이프라인이 빈 값으로 실패한다.
-
-| Key | Value | Visibility |
-|---|---|---|
-| `DOCKER_REGISTRY` | `nexus-docker.example.com` | Visible |
-| `DOCKER_USER` | Nexus 사용자 (push 권한) | Visible |
-| `DOCKER_PASSWORD` | Nexus 비밀번호 | Masked |
-| `GITOPS_REPO` | `gitlab.example.com/my-group/gitops-manifests.git` | Visible |
-| `GITOPS_USER` | `gitlab-ci` (아무 문자열) | Visible |
-| `GITOPS_TOKEN` | `~/gitops-ci-token.txt` | Masked |
-| `ARGOCD_SERVER` | `argocd.example.com:80` | Visible |
-| `ARGOCD_AUTH_TOKEN` | `~/cicd-argocd-token.txt` (4.4) | Masked |
-
-Masked 는 값이 8자 이상이고 공백이 없어야 저장된다.
-
-### 6.4 push → dev 배포
+```bash
+# 읽기(앱 리포지토리)·쓰기(gitops) 둘 다 200 이어야 한다
+curl -s -o /dev/null -w 'read  %{http_code}\n' -u "ci-bot:$(tr -d '\n' < ~/gitlab-group-token.txt)" \
+  'http://gitlab.example.com/my-group/sample-app.git/info/refs?service=git-upload-pack'
+curl -s -o /dev/null -w 'write %{http_code}\n' -u "ci-bot:$(tr -d '\n' < ~/gitlab-group-token.txt)" \
+  'http://gitlab.example.com/my-group/gitops-manifests.git/info/refs?service=git-receive-pack'
+```
 
 ```bash
 cd ~/workspace/sample-app
 git add . && git commit -m "initial: sample-app"
 git remote add origin http://gitlab.example.com/my-group/sample-app.git
-git push -u origin main -o ci.skip       # main 은 prod 용이라 첫 push 는 파이프라인을 건너뛴다
-git push origin main:develop             # develop 생성 → dev 파이프라인 시작
+git push -u origin main
+git push origin main:develop
 ```
 
-`sample-app` > Build > **Pipelines** 에서 `build-test → docker-build-push → deploy-dev → wait-dev` 가 모두 초록이면 된다.
-첫 실행은 이미지 pull 과 `npm ci` 로 수 분 걸린다.
+아직 Jenkins 잡이 없으므로 push 만으로는 아무것도 돌지 않는다.
+
+### 7.3 Jenkins 잡 등록
+
+Jenkins UI > **새로운 Item** > 이름 `sample-app` > **Multibranch Pipeline**.
+
+- **Branch Sources > Add source > Git**
+  - Project Repository: `http://gitlab.gitlab.svc.cluster.local/my-group/sample-app.git`
+  - Credentials: `ci-bot/****** (gitops 매니페스트 리포지토리 push 용)` — 이것이 `gitops-repo` 다.
+    드롭다운에는 ID 가 아니라 `사용자명/****** (설명)` 으로 보인다. `argocd-auth-token` 은
+    Secret text 라 이 칸에 나오지 않는 게 정상이다.
+- **Build Configuration** — 기본값(`by Jenkinsfile`) 그대로.
+
+Save 하면 바로 브랜치 스캔이 돌고, `Jenkinsfile` 이 있는 `main` 과 `develop` 에 빌드가 하나씩 걸린다.
+스캔 로그는 사이드바 **Scan Multibranch Pipeline Log** 에서 본다.
+
+- **`main` 빌드는 "prod 승인" 단계에서 멈춰 선다 — 정상이다.** 7.4 에서 dev 를 먼저 확인한 뒤
+  7.5 에서 승인한다(승인 대기는 60분이 지나면 빌드가 중단된다. 그때는 `main` 을 다시 빌드한다).
+- **자동 트리거가 없다.** 이후 push 하면 잡 화면의 **Scan Multibranch Pipeline Now** 를 눌러야
+  빌드가 걸린다. 손으로 누르기 번거로우면 잡 설정의 *Scan Multibranch Pipeline Triggers >
+  Periodically if not otherwise run* 을 켜서 주기적으로 스캔하게 한다.
+- 잡을 UI 대신 코드로 관리하려면 `casc.yaml` 의 `jobs:` 블록(job-dsl) 주석을 해제한다.
+
+### 7.4 dev 배포 확인
+
+Jenkins 의 `sample-app » develop` 빌드에서 모든 단계가 초록이면 된다. 첫 실행은 에이전트 이미지
+pull 과 `npm ci` 로 수 분 걸린다. 콘솔 로그 마지막 줄에
+`배포 완료: dev → http://sample-app.dev.example.com (version: develop-xxxxxxxx)` 가 찍힌다.
 
 ```bash
 argocd app get sample-app-dev --grpc-web | grep -E 'Sync Status|Health Status'   # Synced / Healthy
-kubectl -n sample-app-dev get pods
-curl -s http://sample-app.dev.example.com/healthz                               # ok
+kubectl -n sample-app-dev get pods                     # Deployment 이름은 dev-sample-app (namePrefix)
+curl -s http://sample-app.dev.example.com/healthz      # ok
 ```
 
 브라우저에서 `http://sample-app.dev.example.com` → `environment: dev`, `version: develop-<sha>`.
-gitops-manifests 에는 `chore(dev): sample-app -> develop-<sha> [skip ci]` 커밋이 생긴다.
+`version` 은 빌드 때 JS 번들에 들어가므로 `printenv` 나 `curl` 로는 보이지 않고 **브라우저에서만** 보인다.
+gitops-manifests 에는 `chore(dev): sample-app -> develop-<sha>` 커밋이 생긴다.
 
-### 6.5 (선택) prod 배포
+### 7.5 prod 배포
+
+사전 조건 두 가지:
+
+- **metrics-server(1.8)** — prod 에는 HPA 가 있다. 없으면 HPA 가 `<unknown>` 으로 남고 Argo CD 가
+  이를 Degraded 로 판정해, 배포 자체는 됐는데도 "배포 대기" 단계가 health 에서 실패한다.
+- **hosts 에 `127.0.0.1 sample-app.example.com`** — Windows 와 WSL 양쪽(1.5).
+
+`sample-app » main` 빌드의 "prod 승인" 단계에서 **배포** 를 누른다(Stage View 의 단계 위, 또는
+콘솔 로그의 `Input requested` 링크). 이후 gitops 태그 커밋 → `argocd app sync` → Synced + Healthy
+대기까지 이어진다.
+
+배포 확인은 경로를 따라 **같은 태그(`main-xxxxxxxx`)가 보이는지** 본다. 태그는 콘솔 로그 마지막 줄
+`배포 완료: prod → ... (version: main-xxxxxxxx)` 에 있다.
 
 ```bash
-git push origin main       # main 파이프라인: build-test → docker-build-push → deploy-prod(수동)
+# 1. gitops 리포지토리 — chore(prod): sample-app -> main-xxxxxxxx 커밋 (GitLab UI 로 봐도 된다)
+# 2. Argo CD — Synced / Healthy / 1 의 커밋 SHA
+kubectl -n argocd get application sample-app-prod \
+  -o jsonpath='{.status.sync.status} {.status.health.status} {.status.sync.revision}{"\n"}'
+# 3. 클러스터
+kubectl -n sample-app-prod get deploy prod-sample-app \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'      # ...:main-xxxxxxxx
+kubectl -n sample-app-prod get pods,hpa,pdb       # 파드 3개, cpu: x%/70%, ALLOWED DISRUPTIONS 1
+# 4. Ingress
+curl -s http://sample-app.example.com/healthz     # ok
+curl -s http://sample-app.example.com/config.js   # env: "prod"
 ```
 
-Pipelines 에서 `deploy-prod` 의 ▶ 를 누르면 태그 커밋 후 `wait-prod` 가 sync 까지 건다.
-브라우저로 보려면 Windows/WSL hosts 에 `127.0.0.1 sample-app.example.com` 을 추가한다.
-prod 에는 HPA 가 있어 **metrics-server(1.8)가 먼저 설치돼 있어야 한다.** 없으면 HPA 가
-`<unknown>` 으로 남고 Argo CD 가 이를 Degraded 로 판정해, 배포 자체는 됐는데도
-`wait-prod` 가 health 대기에서 실패한다.
+마지막으로 브라우저에서 `http://sample-app.example.com` → `environment: prod`, `version: main-<sha>`.
+태그가 어느 단계에서 달라지면 그 앞 단계에서 멈춘 것이다.
 
-### 6.6 자주 막히는 곳
+- **같은 커밋을 다시 빌드하면 파드는 교체되지 않는다.** 태그가 같아 "gitops 태그 갱신" 이
+  `변경 없음 - 커밋 생략` 으로 끝나고, Argo CD 가 바꿀 것이 없다. `rollout history` 의 리비전이
+  늘지 않는 게 정상이다.
+- curl 이 빈 응답이면 `-s` 가 에러를 숨긴 것이다. `curl -sS -H 'Host: sample-app.example.com'
+  http://localhost/healthz` 가 `ok` 면 Ingress 는 정상이고 이름 해석(hosts)이 문제다.
+
+### 7.6 자주 막히는 곳
 
 | 증상 | 원인 |
 |---|---|
-| `Unable to create pipeline` + 잡 0개 | `.gitlab-ci.yml` 문법. script 한 줄에 따옴표 없이 `: `(콜론+공백)가 들어가면 YAML 이 문자열이 아닌 맵으로 읽어 `script config should be a string ...` 가 난다 → 줄 전체를 `'...'` 로 감싼다. Build > Pipeline editor > Validate 로 미리 확인 |
-| 잡이 `pending` | 러너 Offline (2.4) 또는 태그 불일치 |
-| `build-test` 가 이미지 pull 실패 | Nexus docker-group 익명 pull (3.3) |
-| kaniko `UNAUTHORIZED` | `DOCKER_USER`/`DOCKER_PASSWORD`, 또는 변수가 Protected |
-| kaniko `http: server gave HTTP response to HTTPS client` | `--insecure-pull` / `--insecure` 누락 |
-| `deploy-dev` 가 `pre-receive hook declined` | `GITOPS_TOKEN` 역할이 Maintainer 가 아님 |
-| `wait-dev` 가 `permission denied` | `ARGOCD_AUTH_TOKEN` (cicd 계정, `argocd-rbac-cm` 의 `role:ci`) |
-| 파드 `CrashLoopBackOff`, 로그에 `Read-only file system` | `nginx.conf` 의 `/tmp` 경로 — 6.1 의 `--read-only` 실행으로 재현 |
-| 파드 `ImagePullBackOff` + `401` | `regcred` (4.5-3) |
-| `wait-prod` 가 health 에서 실패, 앱 Degraded, HPA `<unknown>` | metrics-server 없음 (1.8) |
-
-- `[skip ci]` 는 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
+| push 했는데 빌드가 안 걸린다 | 자동 트리거 없음 — **Scan Multibranch Pipeline Now** (7.3) |
+| 스캔·체크아웃이 `401` / `Authentication failed` | `gitops-repo`(그룹 토큰, 2.4). 토큰 파일 끝 줄바꿈이 섞였거나 시크릿을 바꾼 뒤 재시작 안 함(5.2) |
+| 에이전트 Pod `ImagePullBackOff` (kaniko / argocd) | Nexus `gcr-proxy`·`quay-proxy` 가 없거나 `docker-group` 멤버에 없음 (3.3) |
+| 에이전트 Pod 가 `Pending` | 노드 메모리 부족. `kubectl -n jenkins describe pod <에이전트>` |
+| "배포 대기" 가 5분 뒤 `process apparently never started` | `argocd` 컨테이너 uid (5.4) |
+| kaniko `UNAUTHORIZED` | `NEXUS_USER`/`NEXUS_PASSWORD` (5.2), push 권한 |
+| kaniko `http: server gave HTTP response to HTTPS client` | `--insecure` / `--skip-tls-verify` / `--insecure-pull` 누락 |
+| sh 스텝에서 줄 연결이 깨진다 | Groovy `'''` 문자열은 줄 끝 `\` 를 먹는다 — Jenkinsfile 에서는 `\\` 로 적는다 |
+| "gitops 태그 갱신" 이 `pre-receive hook declined` | 그룹 토큰 role 이 Maintainer 가 아님 (2.4) |
+| "배포 대기" 가 `permission denied` | `ARGOCD_AUTH_TOKEN` (cicd 계정, `argocd-rbac-cm` 의 `role:ci`) |
+| "배포 대기" 가 health 에서 실패, 앱 Degraded, HPA `<unknown>` | metrics-server 없음 (1.8) |
+| 파드 `CrashLoopBackOff`, 로그에 `Read-only file system` | `nginx.conf` 의 `/tmp` 경로 — 7.1 의 `--read-only` 실행으로 재현 |
+| 파드 `ImagePullBackOff` + `401` | `regcred` (3.5-2) |
+| `jenkins-0` 의 `install-plugins` 가 CrashLoopBackOff | 외부 DNS (5.3) |
 
 ## 이미지 태그 갱신 방식 (택1)
 
 | 방식 | 설명 |
 |---|---|
-| **CI 커밋** (기본) | GitLab CI 가 `kustomize edit set image` 후 gitops 리포지토리에 커밋. 이력이 git 에 남고 롤백이 쉽다. |
-| **Argo CD Image Updater** | `bootstrap/image-updater/` 적용. 레지스트리를 폴링해 새 태그를 write-back. CI 가 gitops 권한을 가질 필요가 없다. |
+| **CI 커밋** (기본) | Jenkins 가 `kustomize edit set image` 후 gitops 리포지토리에 커밋. 이력이 git 에 남고 롤백이 쉽다. |
+| **Argo CD Image Updater** | `bootstrap/image-updater/` 적용. 레지스트리를 폴링해 새 태그를 write-back. CI 가 gitops 쓰기 권한을 가질 필요가 없다. |
 
 두 방식을 동시에 쓰면 커밋이 충돌하므로 하나만 선택한다. **이 리포지토리는 CI 커밋 방식**이므로
 `apps/sample-app.yaml` 에 image-updater 어노테이션이 없다. Image Updater 로 바꾸려면
@@ -1306,159 +1455,151 @@ prod 에는 HPA 가 있어 **metrics-server(1.8)가 먼저 설치돼 있어야 �
     argocd-image-updater.argoproj.io/git-branch: main
 ```
 
-이때 `.gitlab-ci.yml` 의 `update-gitops` 잡과 CI 변수 `GITOPS_TOKEN` 은 필요 없어진다.
+이때 Jenkinsfile 의 "gitops 태그 갱신" 단계는 필요 없어진다. 그룹 토큰은 앱 리포지토리
+체크아웃에 계속 쓰이므로, 스코프를 `read_repository` 로 줄여 다시 발급하면 된다.
 
 ## 운영 관련 메모
 
 - **prod 는 수동 동기화**: `apps/sample-app.yaml` 의 `sample-app-prod` 에 `syncPolicy.automated` 가 없다.
-  자동화하려면 dev 쪽 블록을 복사하고 `prod` AppProject 의 `syncWindows` 를 확인한다.
+  Jenkins 가 승인 후 `argocd app sync` 를 건다. 자동화하려면 dev 쪽 블록을 복사하고 `prod`
+  AppProject 의 `syncWindows` 를 확인한다.
 - **HA**: 운영 클러스터는 `bootstrap/argocd/kustomization.yaml` 에서 `ha/install.yaml` 로 교체.
 - **replicas diff 무시**: HPA 사용 시 `argocd-cm` 의 `resource.customizations.ignoreDifferences.apps_Deployment` 로
   OutOfSync 오탐을 막는다.
-- **`[skip ci]`**: gitops 커밋 메시지에 포함해 파이프라인 재귀 실행을 막는다.
+- **gitops 커밋이 CI 를 다시 부르지 않는다**: Jenkins 잡은 앱 리포지토리만 보므로 gitops 리포지토리
+  커밋으로 빌드가 재귀 실행되지 않는다. GitLab CI(부록)로 돌릴 때는 커밋 메시지의 `[skip ci]` 가
+  그 역할을 한다.
+- **동시 빌드 없음**: Jenkinsfile 의 `disableConcurrentBuilds()` 로 같은 브랜치 빌드가 겹치지 않는다.
+  두 빌드가 동시에 gitops 에 push 하다 한쪽이 거부되는 것을 막는다.
 
 ## 검증
 
 ```bash
 kubectl kustomize bootstrap/argocd            > /dev/null
+kubectl kustomize bootstrap/jenkins           > /dev/null
 kubectl kustomize manifests/sample-app/overlays/dev
 kubectl kustomize manifests/sample-app/overlays/prod
 ```
 
-## 부록: Jenkins 자체 호스팅 (GitLab CI 대체)
+## 부록: GitLab CI 로 돌리기 (Jenkins 대체)
 
-GitLab CI 대신 Jenkins 로 CI 를 돌리는 구성. 이미 Jenkins 자산이 있거나,
-러너 대신 익숙한 파이프라인을 그대로 쓰고 싶을 때만 선택한다.
-`bootstrap/jenkins/` 는 설치 마법사 없이 **JCasC(Configuration as Code)** 로 기동하는
-Jenkins 컨트롤러 구성이다. 빌드는 컨트롤러가 아니라 kubernetes 플러그인이 띄우는
-에이전트 Pod(`kaniko` + `tools`)에서 실행된다.
+Jenkins(5장) 대신 GitLab 내장 CI 와 러너로 같은 흐름을 돌리는 구성. 컴포넌트가 하나 줄고
+`ci/.gitlab-ci.yml` 하나면 된다. CI 는 하나만 고른다.
 
-CI 는 하나만 고른다.
-
-| 구성 | git 호스트 | CI | 비고 |
+| 구성 | git 호스트 | CI | 파이프라인 파일 |
 |---|---|---|---|
-| **GitLab 단독** (기본) | GitLab CE | GitLab CI + Runner | 컴포넌트 최소. `ci/.gitlab-ci.yml` 하나면 된다. |
-| GitLab + Jenkins | GitLab CE | Jenkins | 기존 Jenkinsfile 자산을 그대로 쓸 때. `bootstrap/jenkins/` 추가. |
+| **GitLab + Jenkins** (기본, 5·7장) | GitLab CE | Jenkins | `ci/Jenkinsfile` |
+| GitLab 단독 (이 부록) | GitLab CE | GitLab CI + Runner | `ci/.gitlab-ci.yml` |
 
-기본 구성에서는 `bootstrap/jenkins/` 를 적용하지 않는다.
+> ⚠️ **앱 리포지토리에는 둘 중 하나만 둔다.** `Jenkinsfile` 과 `.gitlab-ci.yml` 이 같이 있으면
+> push 한 번에 두 CI 가 모두 돌아 같은 overlay 에 이미지 태그를 커밋하고 서로 밀어낸다.
+> Jenkins 에서 옮겨 온다면 Jenkins 의 `sample-app` 잡도 비활성화한다.
 
-### 사전 조건
+순서는 본문 1~4 → A.1 → 6 → A.2~A.4 다(5·7장 대신).
 
-1. **메모리** — 컨트롤러가 2Gi(limit), 여기에 에이전트 Pod 분량이 더 붙는다.
-   GitLab + Nexus + Argo CD 와 같이 돌린다면 노드 메모리 16GB 이상을 권장한다.
+### A.1 GitLab Runner 등록
 
-2. **스토리지 디렉터리** — 동적 프로비저너가 없으면 미리 만든다. kind 에서는 노드
-   컨테이너가 아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
+GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
+러너는 토큰이 있어야 기동되므로 **GitLab 이 뜬 뒤에** 적용한다.
 
-```bash
-mkdir -p /data/jenkins
-sudo chown -R 1000:1000 /data/jenkins     # jenkins 컨테이너 UID
-```
+1. **토큰 발급** — **Admin Area > CI/CD > Runners > New instance runner**
+   - Tags: `build`
+   - *Run untagged jobs* 체크 (태그 없는 잡도 받게)
+   - **Create runner** → 화면의 authentication token(`glrt-...`)을 복사한다.
+     이 화면을 벗어나면 토큰을 다시 볼 수 없다(다시 만들어야 한다).
+     그 아래 `gitlab-runner register` 안내는 따르지 않는다 — 토큰을 config.toml 에 바로 넣는 방식이라 필요 없다.
 
-3. **hosts 에 `jenkins.example.com`** — Windows/WSL 양쪽(1.7 표 참고). CoreDNS rewrite 는
-   이미 들어 있다(`bootstrap/coredns/coredns-cm.yaml`).
-
-4. **Nexus 프록시 2개** — 에이전트 컨테이너 중 kaniko 는 `gcr.io`, argocd CLI 는 `quay.io`
-   에 있다. 3.3 의 표대로 프록시를 만들고 `docker-group` 멤버에 추가한다.
-   **첫 빌드 전까지만 하면 된다** (컨트롤러 기동에는 필요 없다).
-
-   | 리포지토리 | 타입 | Remote storage | Docker Index |
-   |---|---|---|---|
-   | `gcr-proxy` | docker (proxy) | `https://gcr.io` | Use proxy registry |
-   | `quay-proxy` | docker (proxy) | `https://quay.io` | Use proxy registry |
-
-   > 멤버 순서는 `docker-hosted` → `docker-hub` → `gcr-proxy` → `quay-proxy` 로 둔다.
-   > Docker Hub 에도 `argoproj/argocd` 리포지토리가 있어서(단 `v3.5.2` 태그는 없다)
-   > 순서를 바꾸면 엉뚱한 이미지를 받을 수 있다.
-
-   만들지 않을 거면 `casc.yaml` 의 두 이미지를 `gcr.io/...`, `quay.io/...` 직행으로 되돌린다.
-
-### 설치
-
-**1. 시크릿** — 값은 매니페스트에 적지 않는다(2.2·2.4·4.2 와 같은 이유). 키 7개를 한 번에 만든다.
+2. **토큰 Secret 생성** — `runner.yaml` 에는 토큰을 적지 않는다(2.2·4.2 와 같은 이유).
 
 ```bash
-kubectl create namespace jenkins --dry-run=client -o yaml | kubectl apply -f -
-
-read -rsp 'jenkins admin password: ' JP; echo
-read -rsp 'gitops token (write_repository): ' GT; echo
-read -rsp 'argocd auth token: ' AT; echo
-read -rsp 'nexus password: ' NP; echo
-# GITOPS_USER 는 비밀이 아니다 — GitLab Project access token 의 *이름* 을 넣는다
-kubectl -n jenkins create secret generic jenkins-secrets \
-  --from-literal=JENKINS_ADMIN_ID='admin' \
-  --from-literal=JENKINS_ADMIN_PASSWORD="$JP" \
-  --from-literal=GITOPS_USER='gitlab-ci' \
-  --from-literal=GITOPS_TOKEN="$GT" \
-  --from-literal=ARGOCD_AUTH_TOKEN="$AT" \
-  --from-literal=NEXUS_USER='<nexus 사용자>' \
-  --from-literal=NEXUS_PASSWORD="$NP" \
-  --dry-run=client -o yaml | kubectl apply -f -
-unset JP GT AT NP
-kubectl -n jenkins get secret jenkins-secrets
+read -rsp 'runner token (glrt-...): ' RT; echo
+# glrt- 로 시작하지 않으면(빈 값·잘못 붙여 넣기) 만들지 않는다
+[[ $RT == glrt-* ]] && kubectl -n gitlab create secret generic gitlab-runner-secrets \
+  --from-literal=RUNNER_TOKEN="$RT" --dry-run=client -o yaml | kubectl apply -f -
+unset RT
+kubectl -n gitlab get secret gitlab-runner-secrets
 ```
 
-> 값을 `cat` 이나 명령줄 인자로 넣지 않는다. `read -rsp` 는 입력이 화면에 찍히지 않는다.
-> `ARGOCD_AUTH_TOKEN` 은 4.4 에서 발급한 것을 재사용해도 되고, 따로 발급해도 된다.
-
-> **`regcred` 는 만들지 않는다.** kaniko 의 `/kaniko/.docker/config.json` 은 Jenkinsfile 이
-> `nexus-registry` 자격증명으로 직접 만든다(위 `NEXUS_USER`/`NEXUS_PASSWORD`).
-> `docker-registry` 타입 Secret 을 Pod 템플릿의 `secretVolume` 으로 붙이면 파일 이름이
-> `.dockerconfigjson` 이 되어 kaniko 가 찾지 못한다. 에이전트 이미지는 `docker-group`
-> 익명 pull 로 받으므로 `imagePullSecrets` 도 필요 없다.
-
-**2. 적용**
+3. **러너 적용** — `bootstrap/gitlab/kustomization.yaml` 에서 `runner.yaml` 줄의 주석을 해제한다(기본은 제외).
+   GitLab 본체도 같은 kustomization 이므로, 러너 외에 바뀌는 게 없는지 먼저 diff 로 본다.
 
 ```bash
-kubectl kustomize bootstrap/jenkins | kubectl apply -f -
-
-# 최초 기동은 플러그인 다운로드로 1~3분 걸린다
-kubectl -n jenkins logs -f sts/jenkins -c install-plugins
-kubectl -n jenkins get pods -w
+kubectl kustomize bootstrap/gitlab | kubectl diff -f - | grep -E '^(\+\+\+|---) '
+# gitlab-runner 관련 리소스만 나오면 적용한다. gitlab StatefulSet 등이 보이면 멈추고 내용을 확인한다
+kubectl kustomize bootstrap/gitlab | kubectl apply -f -
+kubectl -n gitlab rollout status deploy/gitlab-runner
+kubectl -n gitlab logs deploy/gitlab-runner --tail=20
 ```
 
-접속은 Ingress(`http://jenkins.example.com`)로 한다.
+로그에 `Configuration loaded` 와 `Starting multi-runner` 가 뜨고, Admin Area > CI/CD > Runners 목록에서
+러너가 **Online**(초록 점)이면 성공이다. glrt 토큰은 등록 절차가 없으므로 `Registering runner` 줄은 나오지 않는다.
+잡 Pod 는 `gitlab` 네임스페이스에 `gitlab-runner-job` 서비스 어카운트로 뜬다(권한 없음).
 
-> **플러그인은 외부(updates.jenkins.io)에서 받는다.** 이미지는 Nexus 를 거치지만
-> `install-plugins` 초기화 컨테이너는 그렇지 않아, 파드가 재생성될 때마다 인터넷이
-> 필요하다. `plugins.txt` 에 버전을 고정하지 않고 `--latest true` 를 쓰므로 받는
-> 시점에 따라 플러그인 버전이 달라질 수 있다.
+> - 토큰이 틀리면 로그에 `403 Forbidden` 이 반복된다. 2 를 다시 실행하고
+>   `kubectl -n gitlab rollout restart deploy/gitlab-runner` — 환경변수는 Pod 시작 때만 읽힌다.
+> - Pod 가 `CreateContainerConfigError` 면 2 의 Secret 이 없는 것이다.
+> - **잡 파드의 이미지는 Nexus(3장)를 거친다.** `config.toml` 의 `image` 와 `helper_image` 가
+>   `nexus-docker-group.example.com/...` 을 가리킨다. 러너 자체는 Nexus 없이도 Online 이 되지만,
+>   **잡은 3장을 끝낸 뒤에야 돈다.** 여기서 먼저 잡을 돌려 보고 싶으면 두 줄을 각각
+>   `alpine:3.22`, `registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.11.0`
+>   으로 되돌리면 된다(외부 인터넷 필요).
+> - **러너 버전을 올릴 때는 `helper_image` 태그도 같이 올린다.** 본체(`gitlab/gitlab-runner:v17.11.0`)와
+>   helper 의 버전이 어긋나면 잡이 실패한다. helper 는 `.gitlab-ci.yml` 에 안 보이는 숨은 컨테이너라
+>   `git clone` 단계에서 엉뚱하게 터진다.
 
-> **kind 에서는 NodePort(`http://<노드IP>:30808`)로 접속할 수 없다.**
-> `kind-config.yaml` 에 30808 매핑이 없어 노드 컨테이너 안에서만 열린다.
-> `nodeport.yaml` 은 주석 처리된 상태가 기본값이고, 그대로 둔다. 일반
-> 클러스터(호스트가 곧 노드)에서만 주석을 해제해 노드 IP 로 접속한다.
+### A.2 CI/CD 변수 등록
 
-### 파이프라인 구성
+`my-group/sample-app` 을 7.2 처럼 만든 뒤 Settings > CI/CD > **Variables** > Add variable.
+**모든 변수에서 *Protect variable* 체크를 끈다.** 켜 두면 보호 브랜치(`main`)에서만 값이 들어가
+`develop` 파이프라인이 빈 값으로 실패한다.
 
-`ci/Jenkinsfile` 을 앱 리포지토리 루트에 `Jenkinsfile` 이름으로 복사한다.
-흐름은 `ci/.gitlab-ci.yml` 과 같다(테스트 → 이미지 → gitops 커밋 → 배포 대기).
-
-```bash
-cp ci/Jenkinsfile ~/workspace/sample-app/Jenkinsfile
-```
-
-> ⚠️ **같은 리포지토리에서 `.gitlab-ci.yml` 을 지운다.** 남겨두면 push 한 번에 GitLab CI 와
-> Jenkins 가 둘 다 돌아 같은 overlay 에 이미지 태그를 커밋하고 서로 밀어낸다.
-> (GitLab 러너 자체는 그대로 둬도 된다 — 잡이 없으면 놀고 있을 뿐이다.)
-
-에이전트 Pod 는 `casc.yaml` 의 `build` 템플릿이고 컨테이너 4개를 쓴다.
-
-| 컨테이너 | 이미지 | 단계 |
+| Key | Value | Visibility |
 |---|---|---|
-| `node` | `library/node:22-alpine` | `npm ci` / `npm test` / `npm run build` |
-| `kaniko` | `kaniko-project/executor:v1.23.2-debug` | 이미지 빌드·Nexus push |
-| `tools` | `alpine/k8s:1.30.2` | `kustomize edit set image` → gitops 커밋 |
-| `argocd` | `argoproj/argocd:v3.5.2` | `argocd app sync` / `wait` |
+| `DOCKER_REGISTRY` | `nexus-docker.example.com` | Visible |
+| `DOCKER_USER` | Nexus 사용자 (push 권한) | Visible |
+| `DOCKER_PASSWORD` | Nexus 비밀번호 | Masked |
+| `GITOPS_REPO` | `gitlab.example.com/my-group/gitops-manifests.git` | Visible |
+| `GITOPS_USER` | `ci-bot` | Visible |
+| `GITOPS_TOKEN` | `~/gitlab-group-token.txt` (2.4) | Masked |
+| `ARGOCD_SERVER` | `argocd.example.com:80` | Visible |
+| `ARGOCD_AUTH_TOKEN` | `~/cicd-argocd-token.txt` (4.4) | Masked |
 
-브랜치 규칙은 GitLab CI 와 같다. `develop` → dev(자동 동기화), `main` → **수동 승인** 후
-prod(Argo CD 수동 동기화). 승인은 GitLab 의 `when: manual` 에 해당하는 `input` 단계다.
+Masked 는 값이 8자 이상이고 공백이 없어야 저장된다. 앱 리포지토리 체크아웃은 GitLab CI 가
+잡 토큰으로 하므로, 그룹 토큰은 gitops push 에만 쓰인다(gitops 프로젝트 전용 Project access
+token 을 Maintainer / `write_repository` 로 발급해 대신 써도 된다).
 
-**잡 등록** — Jenkins UI 에서 **New Item > Multibranch Pipeline** 으로 만들고 소스를
-`http://gitlab.gitlab.svc.cluster.local/my-group/sample-app.git` (자격증명 `gitops-repo`)로 준다.
-코드로 관리하려면 `casc.yaml` 의 `jobs:` 블록(job-dsl) 주석을 해제한다.
+### A.3 파이프라인 배치와 dev 배포
 
-GitLab 의 webhook URL 은 `http://jenkins.jenkins.svc.cluster.local:8080/gitlab-webhook/post`
-(클러스터 내부, `gitlab-branch-source` 플러그인 엔드포인트)로 지정한다.
+7.1 에서 `Jenkinsfile` 대신 `.gitlab-ci.yml` 을 복사한다.
 
-> Image Updater 와 Jenkins 커밋을 동시에 쓰면 이미지 태그 커밋이 충돌한다. 하나만 선택한다.
+```bash
+cd ~/workspace/sample-app
+rm -f Jenkinsfile
+cp ~/workspace/cicd/ci/.gitlab-ci.yml .
+git add -A && git commit -m "ci: GitLab CI"
+git push -u origin main -o ci.skip       # main 은 prod 용이라 이 push 는 파이프라인을 건너뛴다
+git push origin main:develop             # develop → dev 파이프라인 시작
+```
+
+`sample-app` > Build > **Pipelines** 에서 `build-test → docker-build-push → deploy-dev → wait-dev` 가
+모두 초록이면 된다. 확인 방법은 7.4 와 같다. gitops-manifests 에는
+`chore(dev): sample-app -> develop-<sha> [skip ci]` 커밋이 생긴다.
+
+### A.4 prod 배포와 자주 막히는 곳
+
+```bash
+git push origin main       # main 파이프라인: build-test → docker-build-push → deploy-prod(수동)
+```
+
+Pipelines 에서 `deploy-prod` 의 ▶ 를 누르면 태그 커밋 후 `wait-prod` 가 sync 까지 건다.
+사전 조건과 확인 방법은 7.5 와 같다.
+
+GitLab CI 에만 있는 증상(나머지는 7.6 과 같다):
+
+| 증상 | 원인 |
+|---|---|
+| `Unable to create pipeline` + 잡 0개 | `.gitlab-ci.yml` 문법. script 한 줄에 따옴표 없이 `: `(콜론+공백)가 들어가면 YAML 이 문자열이 아닌 맵으로 읽어 `script config should be a string ...` 가 난다 → 줄 전체를 `'...'` 로 감싼다. Build > Pipeline editor > Validate 로 미리 확인 |
+| 잡이 `pending` | 러너 Offline (A.1) 또는 태그 불일치 |
+| `build-test` 가 이미지 pull 실패 | Nexus docker-group 익명 pull (3.3) |
+| kaniko `UNAUTHORIZED` | `DOCKER_USER`/`DOCKER_PASSWORD`, 또는 변수가 Protected |
+| `git clone` 단계에서 엉뚱하게 실패 | 러너 본체와 `helper_image` 버전 불일치 (A.1) |
