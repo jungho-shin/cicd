@@ -33,6 +33,8 @@ bootstrap/
       repo-gitlab.yaml        GitLab 리포지토리 자격증명 (예시, 적용 안 함 — README 4.2)
       notifications-cm.yaml   배포 결과를 GitLab commit status 로 회신
       notifications-secret.yaml  (예시, 적용 안 함 — README 4.2)
+  coredns/                    *.example.com 을 ingress-nginx 로 보내는 Corefile (1.6)
+  metrics-server/             upstream components.yaml + --kubelet-insecure-tls 패치 (1.8)
   image-updater/              (선택) Argo CD Image Updater
   jenkins/                    (선택) Jenkins 컨트롤러 - GitLab CI 대체
     namespace.yaml
@@ -85,7 +87,7 @@ sample-app/                   앱 리포지토리 템플릿 (React + Vite, nginx
 | 단계 | 내용 | 비고 |
 |---|---|---|
 | 0. 사전 준비 | placeholder 치환, 토큰 종류 확인 | |
-| 1. 클러스터 준비 | kind 클러스터 + ingress-nginx + hosts | 이미 쓰는 클러스터가 있으면 건너뛴다 |
+| 1. 클러스터 준비 | kind 클러스터 + ingress-nginx + hosts + CoreDNS + metrics-server | 이미 쓰는 클러스터가 있으면 건너뛴다 |
 | 2. GitLab CE | git 호스트 + Runner | 최초 기동 8~15분. 가장 무겁다 |
 | 3. Nexus | 컨테이너 레지스트리 | 외부 레지스트리를 쓰면 생략 |
 | 4. Argo CD | CD + 시크릿 + Application 등록 | |
@@ -402,6 +404,33 @@ kubectl -n ingress-nginx get svc ingress-nginx-controller   # 위 IP 와 같아�
   ```bash
   docker update --restart=unless-stopped $(docker ps -aq --filter label=io.x-k8s.kind.cluster=devops)
   ```
+
+### 1.8 metrics-server 설치
+
+prod overlay 의 HPA 는 CPU 사용률을 `metrics.k8s.io` API 에서 읽는다. 이 API 는
+metrics-server 가 제공하는데 kind 에는 기본으로 들어 있지 않다. 없으면 HPA 가
+`FailedGetResourceMetric ... (get pods.metrics.k8s.io)` 경고를 내며 `<unknown>` 으로 남는다.
+**kubectl 로 보면 파드는 minReplicas 로 떠 있어 문제없어 보이지만, Argo CD 는 이 HPA 를
+Degraded 로 판정한다.** 그래서 앱 Health 가 Degraded 가 되고 CI 의
+`argocd app wait --health` 가 실패한다(6.5).
+
+```bash
+kubectl apply -k bootstrap/metrics-server
+kubectl -n kube-system rollout status deploy/metrics-server
+
+# Ready 후 1분쯤 지나야 값이 나온다
+kubectl top nodes
+```
+
+- `bootstrap/metrics-server/kustomization.yaml` 은 upstream `components.yaml` 에
+  `--kubelet-insecure-tls` 인자 하나만 더한다. kind 노드의 kubelet 인증서는 자체
+  서명이고 노드 IP 가 SAN 에 없어서, 이 인자가 없으면 스크랩이 x509 오류로 실패해
+  파드가 `0/1 Running` 에서 멈춘다(`kubectl -n kube-system logs deploy/metrics-server`).
+  **kind 같은 로컬 클러스터 전용 설정이다.** 운영 클러스터에서는 kubelet 서빙 인증서를
+  정식으로 발급(`serverTLSBootstrap`)하고 이 패치를 뺀다.
+- 이미지는 `registry.k8s.io` 에서 받는다. ingress-nginx(1.3)와 같은 경로라 그쪽이
+  떴다면 따로 할 일은 없다.
+- **이 설치는 `kind delete cluster` 와 함께 사라진다.** 클러스터를 다시 만들면 다시 적용한다.
 
 ## 2. GitLab CE 설치
 
@@ -1233,7 +1262,9 @@ git push origin main       # main 파이프라인: build-test → docker-build-p
 
 Pipelines 에서 `deploy-prod` 의 ▶ 를 누르면 태그 커밋 후 `wait-prod` 가 sync 까지 건다.
 브라우저로 보려면 Windows/WSL hosts 에 `127.0.0.1 sample-app.example.com` 을 추가한다.
-prod 의 HPA 는 metrics-server 가 없으면 `<unknown>` 으로 표시되지만 배포에는 영향이 없다.
+prod 에는 HPA 가 있어 **metrics-server(1.8)가 먼저 설치돼 있어야 한다.** 없으면 HPA 가
+`<unknown>` 으로 남고 Argo CD 가 이를 Degraded 로 판정해, 배포 자체는 됐는데도
+`wait-prod` 가 health 대기에서 실패한다.
 
 ### 6.6 자주 막히는 곳
 
@@ -1248,6 +1279,7 @@ prod 의 HPA 는 metrics-server 가 없으면 `<unknown>` 으로 표시되지만
 | `wait-dev` 가 `permission denied` | `ARGOCD_AUTH_TOKEN` (cicd 계정, `argocd-rbac-cm` 의 `role:ci`) |
 | 파드 `CrashLoopBackOff`, 로그에 `Read-only file system` | `nginx.conf` 의 `/tmp` 경로 — 6.1 의 `--read-only` 실행으로 재현 |
 | 파드 `ImagePullBackOff` + `401` | `regcred` (4.5-3) |
+| `wait-prod` 가 health 에서 실패, 앱 Degraded, HPA `<unknown>` | metrics-server 없음 (1.8) |
 
 - `[skip ci]` 는 gitops 리포지토리에서 파이프라인이 재귀 실행되는 것을 막는다.
 
