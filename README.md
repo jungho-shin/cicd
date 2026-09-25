@@ -1428,6 +1428,10 @@ curl -s http://react-app.example.com/config.js   # env: "prod"
 - **같은 커밋을 다시 빌드하면 파드는 교체되지 않는다.** 태그가 같아 "gitops 태그 갱신" 이
   `변경 없음 - 커밋 생략` 으로 끝나고, Argo CD 가 바꿀 것이 없다. `rollout history` 의 리비전이
   늘지 않는 게 정상이다.
+- **prod 를 처음 배포하면 "배포 대기" 에 `app wait 실패 - 일시적인 Degraded 인지 2분 더 지켜본다` 가
+  찍힐 수 있다 — 정상이다.** 새로 만든 HPA 가 첫 지표를 받기 전(`FailedGetResourceMetric`)에 Argo CD 가
+  잠깐 Degraded 로 판정하고, `argocd app wait` 는 그 순간 실패한다. Jenkinsfile 이 10초 간격으로 다시 보고
+  `Synced Healthy` 가 되면 성공으로 끝난다.
 - curl 이 빈 응답이면 `-s` 가 에러를 숨긴 것이다. `curl -sS -H 'Host: react-app.example.com'
   http://localhost/healthz` 가 `ok` 면 Ingress 는 정상이고 이름 해석(hosts)이 문제다.
 
@@ -1446,6 +1450,7 @@ curl -s http://react-app.example.com/config.js   # env: "prod"
 | "gitops 태그 갱신" 이 `pre-receive hook declined` | 그룹 토큰 role 이 Maintainer 가 아님 (2.4) |
 | "배포 대기" 가 `permission denied` | `ARGOCD_AUTH_TOKEN` (cicd 계정, `argocd-rbac-cm` 의 `role:ci`) |
 | "배포 대기" 가 health 에서 실패, 앱 Degraded, HPA `<unknown>` | metrics-server 없음 (1.8) |
+| "배포 대기" 가 `transitioned from Progressing to Degraded` 뒤 2분 재확인에도 실패 | 일시적 Degraded 가 아니다 — `argocd app get` 으로 Degraded 리소스 확인 (HPA 면 1.8) |
 | 파드 `CrashLoopBackOff`, 로그에 `Read-only file system` | `nginx.conf` 의 `/tmp` 경로 — 7.1 의 `--read-only` 실행으로 재현 |
 | 파드 `ImagePullBackOff` + `401` | `regcred` (3.5-2) |
 | `jenkins-0` 의 `install-plugins` 가 CrashLoopBackOff | 외부 DNS (5.3) |

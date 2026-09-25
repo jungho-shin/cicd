@@ -164,7 +164,17 @@ pipeline {
               if [ "$DEPLOY_ENV" = "prod" ]; then
                 argocd app sync "$APP" $OPTS
               fi
-              argocd app wait "$APP" --sync --health --timeout 600 $OPTS
+              # 일시적인 Degraded(HPA 생성 직후 등)면 2분 더 지켜본다(ci/Jenkinsfile 과 같은 이유)
+              if ! argocd app wait "$APP" --sync --health --timeout 600 $OPTS; then
+                echo "app wait 실패 - 일시적인 Degraded 인지 2분 더 지켜본다"
+                for i in $(seq 1 12); do
+                  sleep 10
+                  STATUS=$(argocd app get "$APP" $OPTS | awk '/^Sync Status:/ {s=$3} /^Health Status:/ {h=$3} END {print s, h}')
+                  echo "  ${i}/12: ${STATUS}"
+                  [ "$STATUS" = "Synced Healthy" ] && exit 0
+                done
+                exit 1
+              fi
             '''
           }
         }

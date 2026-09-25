@@ -172,7 +172,20 @@ pipeline {
               if [ "$DEPLOY_ENV" = "prod" ]; then
                 argocd app sync "$APP" $OPTS
               fi
-              argocd app wait "$APP" --sync --health --timeout 600 $OPTS
+
+              # prod 를 처음 만들면 HPA 가 지표를 받기 전까지 Argo CD 가 잠깐 Degraded 로
+              # 판정하고, app wait 는 Degraded 로 바뀌는 순간 회복을 기다리지 않고 실패한다.
+              # 그때만 2분 더 지켜보고, 그래도 Synced + Healthy 가 아니면 실패로 둔다(README 7.6).
+              if ! argocd app wait "$APP" --sync --health --timeout 600 $OPTS; then
+                echo "app wait 실패 - 일시적인 Degraded 인지 2분 더 지켜본다"
+                for i in $(seq 1 12); do
+                  sleep 10
+                  STATUS=$(argocd app get "$APP" $OPTS | awk '/^Sync Status:/ {s=$3} /^Health Status:/ {h=$3} END {print s, h}')
+                  echo "  ${i}/12: ${STATUS}"
+                  [ "$STATUS" = "Synced Healthy" ] && exit 0
+                done
+                exit 1
+              fi
             '''
           }
         }
