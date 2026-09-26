@@ -1821,7 +1821,8 @@ pg_upgrade 를 쓰라는 안전장치인데, 이 구성은 덤프/복원으로 �
 /data/postgres/dev/            (파드 안 /var/lib/postgresql)
   17/data/                   17.x 가 쓰는 데이터
   18/data/                   18 로 바꾼 뒤의 데이터 (빈 디렉터리에서 initdb → 복원)
-  backup/pg17-to-pg18-<시각>.sql   메이저 변경 직전의 pg_dumpall
+  backup/pg17-to-pg18-<시각>.sql   메이저 변경 직전의 pg_dumpall (시각은 에이전트 기준 UTC)
+  18.old-<시각>/               새 메이저의 디렉터리가 이미 있었으면 잡이 지우지 않고 옮겨 둔 것
 ```
 
 | 변경 | 잡이 하는 일 | 되돌리기 |
