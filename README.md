@@ -102,7 +102,8 @@ samples/                      배포 테스트용 샘플 앱 (각각 별도 앱 
 
 | 단계 | 내용 | 비고 |
 |---|---|---|
-| 0. 사전 준비 | placeholder 치환, 토큰 종류 확인 | |
+| (초기화) | 이전 구축을 지우고 처음부터 | 다시 만들 때만 — `초기화: 처음부터 다시 구축` |
+| 0. 사전 준비 | 도구·버전 확인, placeholder, 발급 값 보관 위치 | |
 | 1. 클러스터 준비 | kind 클러스터 + ingress-nginx + hosts + CoreDNS + metrics-server | 이미 쓰는 클러스터가 있으면 건너뛴다 |
 | 2. GitLab CE | git 호스트 + 토큰 발급 | 최초 기동 8~15분. 가장 무겁다 |
 | 3. Nexus | 컨테이너 레지스트리 + 이미지 프록시 | 외부 레지스트리를 쓰면 생략 |
@@ -112,10 +113,64 @@ samples/                      배포 테스트용 샘플 앱 (각각 별도 앱 
 | 7. 파이프라인 | 앱 리포지토리에 `Jenkinsfile` 배치 + Jenkins 잡 등록 | 여기까지 하면 push → 배포가 이어진다 |
 | 8. 두 번째 앱 | python-api (FastAPI) | 앱을 추가할 때 앱마다 필요한 것만 |
 | 9. PostgreSQL | dev/prod DB 를 GitOps 로 배포 + 버전 변경 잡 | Jenkins 에서 드롭다운으로 버전 선택(메이저 포함) |
+| 10. 재시작 후 점검 | PC 재부팅·`wsl --shutdown` 뒤 상태 확인, 알려진 문제 | 구축 후 수시로 |
 
 GitLab CI(러너)로 돌리려면 5 를 건너뛰고 7 대신 `부록: GitLab CI 로 돌리기` 로 간다.
 
+**작업 위치.** 명령은 모두 WSL 의 `~/workspace/cicd` (이 리포지토리의 clone)에서 실행한다고 가정한다.
+Windows 쪽에서 이 리포지토리를 고쳤다면 push 한 뒤 WSL 에서 `git pull` 해야 클러스터 작업에 반영된다.
+인증을 묻는 `git push` 는 **한 줄씩** 붙여 넣는다 — 여러 줄을 한꺼번에 붙이면 다음 줄이 Username/Password 로 먹힌다.
+
 ## 0. 사전 준비
+
+### 0.1 Windows · WSL 도구
+
+| 확인 | 명령 | 기준 |
+|---|---|---|
+| Windows 메모리 | `[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)` (PowerShell) | WSL 에 16GB 이상 (기본은 RAM 의 절반, 1.1) |
+| Windows 80 포트 | `Get-NetTCPConnection -State Listen -LocalPort 80` (PowerShell) | `ObjectNotFound` = 비어 있음 |
+| WSL systemd | `ps -p 1 -o comm=` | `systemd` (`/etc/wsl.conf` 의 `[boot] systemd=true`) |
+| docker | `command -v docker; systemctl is-enabled docker` | `/usr/bin/docker`(WSL 네이티브, Docker Desktop 아님), `enabled` |
+| kind | `kind version` | v0.30.0 이상 |
+| kubectl | `kubectl version --client` | **v1.33 ~ v1.35** (클러스터 v1.34 와 마이너 ±1) |
+| git 작성자 | `git config --global user.name; git config --global user.email` | 둘 다 값이 있어야 한다(없으면 gitops 커밋이 `Author identity unknown`) |
+
+- `argocd` CLI 는 서버 버전에 맞춰 4.1 에서 설치한다. node·python 은 WSL 에 없어도 된다(샘플 앱 테스트는 컨테이너로 돈다).
+- kubectl 이 범위 밖이면 v1.34 로 바꾼다.
+
+  ```bash
+  V=$(curl -fsSL https://dl.k8s.io/release/stable-1.34.txt)
+  curl -fsSL -o /tmp/kubectl        "https://dl.k8s.io/release/${V}/bin/linux/amd64/kubectl"
+  curl -fsSL -o /tmp/kubectl.sha256 "https://dl.k8s.io/release/${V}/bin/linux/amd64/kubectl.sha256"
+  echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum --check
+  sudo install -m 755 /tmp/kubectl /usr/local/bin/kubectl
+  ```
+
+- 이 리포지토리를 WSL 의 `~/workspace/cicd` 에 clone 한다. **`/mnt/c` 아래가 아니라 WSL 의 ext4 에** 둔다.
+
+  ```bash
+  mkdir -p ~/workspace && cd ~/workspace
+  git clone https://github.com/jungho-shin/cicd.git cicd
+  ```
+
+### 0.2 발급 값 보관 위치
+
+구축 중에 비밀번호·토큰이 여럿 생긴다. **값은 파일(리포지토리)·채팅·스크린샷에 남기지 않는다** — 노출되면 Revoke 후 재발급.
+토큰은 `read -rsp` 로 화면 표시 없이 받아 WSL 홈의 권한 600 파일로, 사람이 로그인할 때 쓰는 비밀번호는 비밀번호 관리 도구에 둔다.
+
+| 값 | 만드는 곳 | 쓰는 곳 | 보관 |
+|---|---|---|---|
+| GitLab root 비밀번호 (8자 이상, 사전에 없는 조합) | 2.2 | GitLab 로그인, 첫 push | 비밀번호 관리 도구 |
+| GitLab Group access token `ci-bot` | 2.4 | Jenkins(5.2), 토큰 확인(7.2, 8.3) | `~/gitlab-group-token.txt` |
+| GitLab Deploy token (gitops 프로젝트) | 4.5-1 | Argo CD 리포지토리 자격증명(4.5-2) | 비밀번호 관리 도구 (발급 직후 바로 사용) |
+| Nexus admin 비밀번호 | 3.2 | Nexus 로그인, `regcred`(3.5), Jenkins(5.2) | 비밀번호 관리 도구 |
+| Argo CD admin 비밀번호 | 4.3 | Argo CD 로그인 | 비밀번호 관리 도구 (변경 후 값) |
+| Argo CD `cicd` 계정 토큰 | 4.4 | Jenkins(5.2) | `~/cicd-argocd-token.txt` |
+| Jenkins admin 비밀번호 | 5.2 | Jenkins 로그인 | 비밀번호 관리 도구 |
+| Argo CD webhook 시크릿 | 6 | GitLab webhook | `~/argocd-webhook-secret.txt` |
+| PostgreSQL dev / prod 비밀번호 | 9.2-3 | 앱의 DB 접속 | 비밀번호 관리 도구 (dev·prod 다른 값) |
+
+### 0.3 전제 조건과 placeholder
 
 - Kubernetes 1.27+ 클러스터와 `ingress-nginx` — 로컬이면 `1. 클러스터 준비` 에서 만든다
 - TLS 를 붙인다면 `cert-manager` (ClusterIssuer `letsencrypt-prod`). 로컬 평문 HTTP 라면 필요 없다
@@ -165,7 +220,16 @@ WSL2 는 localhost 포워딩이 기본이라, WSL 안에서 publish 한 포트�
 ```bash
 # hostPath PV 가 들어갈 디렉터리. 반드시 WSL 의 ext4(/) 아래여야 한다.
 # /mnt/c 는 DrvFs 라 chown/파일 모드가 먹지 않아 Nexus(UID 200) 가 뜨지 못한다.
+# chown 을 먼저 해야 아래 mkdir 이 sudo 없이 된다
 sudo mkdir -p /data && sudo chown "$USER" /data
+df -hT /data | tail -1           # ext4
+
+# 구성요소별 디렉터리와 컨테이너 UID. 각 장(2.1, 3.1, 5.1, 9.2)의 것을 한 번에 만든다
+mkdir -p /data/gitlab/config /data/gitlab/data /data/nexus /data/jenkins /data/postgres/dev /data/postgres/prod
+sudo chown -R 200:200   /data/nexus       # nexus
+sudo chown -R 1000:1000 /data/jenkins     # jenkins
+sudo chown -R 999:999   /data/postgres    # postgres (WSL 에서는 GID 999 가 systemd-journal 등으로 보여도 무해)
+ls -ln /data                              # gitlab 은 root 로 두어도 된다(omnibus 가 스스로 맞춘다)
 
 # docker 가 WSL 부팅 때 함께 뜨는지 확인 (systemd=true 필요)
 systemctl is-enabled docker      # enabled 여야 한다
@@ -183,6 +247,29 @@ sudo sysctl --system
 [wsl2]
 memory=16GB
 ```
+
+**외부 DNS 고정 (권장).** WSL 은 기본으로 `/etc/resolv.conf` 를 자동 생성해 Windows 쪽 DNS 프록시(NAT 게이트웨이,
+예: `172.22.224.1`)를 가리킨다. 이 프록시가 **조용히 멈추는** 일이 있다 — `ping 8.8.8.8` 은 되는데 이름 해석만
+안 되고, `wsl --shutdown` 으로도 풀리지 않았다. 그러면 kind 노드와 파드의 외부 DNS 도 같이 죽어서
+Jenkins 의 플러그인 설치(5.3), `npm ci`·`pip install`(7·8장), postgres 버전 목록(9.5)이 이름 해석 실패로 멈춘다.
+처음부터 DNS 서버를 직접 적어 둔다(Windows 10 에서는 `dnsTunneling`·mirrored 네트워킹을 쓸 수 없다).
+
+```bash
+# Windows 가 실제로 쓰는 DNS 를 확인 (PowerShell): Get-DnsClientServerAddress -AddressFamily IPv4
+sudo tee -a /etc/wsl.conf >/dev/null <<'EOF'
+
+[network]
+generateResolvConf = false
+EOF
+sudo rm /etc/resolv.conf                  # /mnt/wsl/resolv.conf 로 가는 링크다
+printf 'nameserver %s\n' <Windows 의 DNS 1> <Windows 의 DNS 2> 8.8.8.8 | sudo tee /etc/resolv.conf
+getent ahostsv4 pypi.org | head -1        # IPv4 한 줄이 나오면 된다
+```
+
+- 설정 후 `wsl --shutdown` 으로 재시작해도 `/etc/resolv.conf` 가 일반 파일로 남아 있는지 확인한다.
+  kind 노드는 docker 내장 DNS 를 거쳐 이 값을 쓴다(`docker exec devops-worker grep ExtServers /etc/resolv.conf`).
+- **네트워크(장소·VPN·ISP)가 바뀌면 이 파일을 직접 고쳐야 한다.**
+- 되돌리기: `/etc/wsl.conf` 의 `[network]` 구역을 지우고 `wsl --shutdown` — WSL 이 링크를 다시 만든다.
 
 ### 1.2 클러스터 생성
 
@@ -209,9 +296,24 @@ GitLab/Jenkins/Nexus/Argo CD 기준으로 다음이 들어 있다.
   `docker exec` 로 넣은 설정과 달리 클러스터를 다시 만들어도 유지된다
 
 ```bash
+cd ~/workspace/cicd
+kind get clusters                          # 같은 이름(devops)이 없어야 한다
+ss -ltn | grep -E ':(80|443|6443|30022|30082|30083)\s' || echo "포트 모두 비어 있음"
 kind create cluster --name devops --config kind-config.yaml
-kubectl get nodes -o wide
+
+kubectl config current-context             # kind-devops
+kubectl get nodes -o wide                  # 3대 Ready
+kubectl get nodes -L ingress-ready,storage-node   # control-plane 만 ingress-ready, devops-worker 만 storage-node
+docker exec devops-worker ls -ln /data     # WSL 의 /data 와 같은 내용 (devops-worker2 에는 없다)
+
+# WSL 재시작 뒤 노드가 자동으로 올라오게 한다(1.7). 클러스터를 다시 만들면 다시 실행한다
+docker update --restart=unless-stopped $(docker ps -aq --filter label=io.x-k8s.kind.cluster=devops)
 ```
+
+- 노드 컨테이너의 시계는 UTC, WSL 은 KST 라 같은 파일의 시각이 9시간 다르게 보인다.
+- Nexus 미러 설정이 실제로 로드됐는지는 `docker exec devops-worker ctr deprecations list` 의
+  `cri-registry-mirrors` 경고로 확인한다(`crictl info` 는 containerd 2.x 에서 미러를 보여 주지 않는다).
+  `registry.mirrors` 는 폐기 예정 형식이라, kind 노드 이미지를 올리면 `config_path` + `certs.d/hosts.toml` 로 바꿔야 할 수 있다.
 
 > 라벨은 `kubeadmConfigPatches` 의 `kubeletExtraArgs` 대신 노드의 `labels`
 > 필드로 붙인다. Kubernetes 1.31+ 는 kubeadm 설정이 v1beta4 로 바뀌면서
@@ -273,7 +375,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: nexus.example.com' http://lo
 curl.exe -sS -o NUL -w "%{http_code}\n" -H "Host: nexus.example.com" http://127.0.0.1/
 ```
 
-`200` 또는 `302` 면 클러스터 쪽은 끝이다. `Connection reset` 이면 컨트롤러가
+**이 시점에는 Ingress 가 하나도 없으므로 `404`(ingress-nginx 기본 백엔드)가 정상이다.** Nexus 를 설치한(3.2) 뒤에는
+같은 명령이 `200` 을 돌려준다. nginx 가 응답했다는 것은 docker 포트 매핑 → hostPort → 컨트롤러, (Windows 에서라면)
+localhost 포워딩까지 통로가 열렸다는 뜻이다. `Connection reset` 이면 컨트롤러가
 control-plane 이 아닌 노드에 떠 있는 것이고, `404` 면 Host 헤더가 Ingress 규칙과
 맞지 않는 것이다. WSL 안에서는 되는데 Windows 에서만 안 되면 localhost 포워딩
 문제이므로 `wsl --shutdown` 후 재기동하거나 Windows 쪽에서 80 포트를 이미 쓰는
@@ -426,8 +530,9 @@ kubectl -n ingress-nginx get svc ingress-nginx-controller   # 위 IP 와 같아�
 ' http://localhost/   # 404 면 복구 완료
   ```
 
-  매번 켜기가 번거로우면 재시작 정책을 바꿔둘 수 있다. 대신 클러스터를 멈춰두려면
-  `docker stop` 을 명시적으로 해야 한다.
+  1.2 에서 재시작 정책을 `unless-stopped` 로 바꿨다면 보통은 docker 가 뜰 때 노드도 같이 올라온다.
+  대신 클러스터를 멈춰두려면 `docker stop` 을 명시적으로 해야 한다. `kind delete cluster` 후 다시 만들면
+  기본값(`on-failure:1`)으로 돌아가므로 다시 실행한다.
 
   ```bash
   docker update --restart=unless-stopped $(docker ps -aq --filter label=io.x-k8s.kind.cluster=devops)
@@ -482,7 +587,7 @@ Gitaly·nginx 를 모두 띄우는 단일 Pod 구성이다. 공식 Helm 차트(`
   노드 메모리 **16GB 이상**을 권장한다. Jenkins 에이전트 Pod 는 그 위에 추가로 뜬다.
 - **스토리지.** `/var/opt/gitlab` 에 git 리포지토리 + DB + 아티팩트가 모두 들어간다.
   동적 프로비저너가 없으면 디렉터리를 미리 만든다. kind 에서는 노드 컨테이너가
-  아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
+  아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다). 1.1 에서 만들었으면 건너뛴다:
 
 ```bash
 mkdir -p /data/gitlab/config /data/gitlab/data
@@ -535,7 +640,20 @@ curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: gitlab.example.com' http://l
 > `external_url` 도 `'http://<노드IP>:30080'` 으로 바꿔야 한다.
 
 초기 계정은 `root` / `GITLAB_ROOT_PASSWORD` 값. 이 값은 **최초 기동(DB 시딩) 때만**
-반영되고 이후에는 무시된다.
+반영되고 이후에는 무시된다. 로그인 ID 는 이메일이 아니라 `root` 다.
+
+```bash
+# root 계정이 시딩됐는지 — root EXISTS id=1 state=active
+kubectl -n gitlab exec sts/gitlab -- gitlab-rails runner 'u = User.find_by(username: "root"); puts u ? "root EXISTS id=#{u.id} state=#{u.state}" : "root MISSING"'
+```
+
+**로그인 후 인스턴스 설정 두 가지** (Admin Area > Settings):
+
+- **CI/CD > Continuous Integration and Deployment** — *Default to Auto DevOps pipeline for all projects* 체크 해제 후 저장.
+  켜져 있으면 `.gitlab-ci.yml` 이 없는 프로젝트에도 push 마다 Auto DevOps 파이프라인(`refs/pipelines/*`)이 생기고,
+  러너가 없어 Pending 으로 쌓인다. Jenkins 와 충돌하지는 않지만 혼란스럽다. 인스턴스 설정이라 이후 만드는 프로젝트에 모두 적용된다.
+  프로젝트 화면의 Auto DevOps 배너는 홍보용이므로 **Enable 을 누르지 않는다.**
+- **General > Sign-up restrictions** — *Sign-up enabled* 해제. 기본값은 누구나 가입할 수 있다(로그인 후 뜨는 배너).
 
 > **비밀번호가 약하면 컨테이너가 exit 1 로 죽는다.** GitLab 은 취약 비밀번호 사전
 > 검사를 하는데, 거부되면 시드(`003_admin.rb`)가 실패하고 `gitlab-ctl reconfigure`
@@ -698,7 +816,7 @@ Docker Hub / Maven Central / npmjs 프록시로 쓴다.
   더 줄이려면 `bootstrap/nexus/nexus.yaml` 의 `INSTALL4J_ADD_VM_PARAMS` 를 조정한다.
 - **스토리지.** 프록시 캐시가 쌓이므로 넉넉히 잡는다(기본 50Gi).
   동적 프로비저너가 없으면 디렉터리를 미리 만든다. kind 에서는 노드 컨테이너가
-  아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
+  아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다). 1.1 에서 만들었으면 건너뛴다:
 
 ```bash
 mkdir -p /data/nexus
@@ -720,8 +838,13 @@ kubectl -n nexus logs -f sts/nexus
 UI 때문이 아니라 Docker 레지스트리(30082/30083) 때문이다(README 1.7 참고).
 일반 클러스터라면 `http://<노드IP>:30081` 로 UI 에 바로 붙는다.
 
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: nexus.example.com' http://localhost/   # 200
+```
+
 초기 계정은 `admin` / `admin123` (`NEXUS_SECURITY_RANDOMPASSWORD: "false"` 로 고정).
-로그인 후 **즉시 비밀번호를 바꾼다.** 임의 비밀번호(기본 동작)를 쓰려면 해당 env 를
+로그인 후 **즉시 비밀번호를 바꾼다.** 첫 로그인 마법사가 익명 접근을 물으면 **Enable** 을 고른다 —
+`docker-group` 의 익명 pull(3.3)에 필요하다(Disable 을 골랐다면 3.3 의 2 에서 다시 켠다). 임의 비밀번호(기본 동작)를 쓰려면 해당 env 를
 `"true"` 로 바꾸고 아래로 확인한다.
 
 ```bash
@@ -871,12 +994,15 @@ systemctl restart containerd
 로 넣는다(5.2). Jenkinsfile 이 이 값(자격증명 `nexus-registry`)으로 kaniko 의
 `/kaniko/.docker/config.json` 을 직접 만든다. `jenkins` 네임스페이스에 `regcred` 는 만들지 않는다(5.2).
 
-**2. 앱 네임스페이스 pull secret** — 이미지를 내려받을 네임스페이스마다 필요하다.
+**2. 앱 네임스페이스 pull secret** — 앱 이미지(docker-hosted)를 내려받을 네임스페이스마다 필요하다.
+react-app(7장)과 python-api(8장)의 dev/prod 네 곳을 한 번에 만든다. PostgreSQL(9장)은 공식 이미지를
+docker-group 익명 pull 로 받으므로 필요 없다.
 
 ```bash
-# 비밀번호가 셸 기록에 남지 않게 read 로 받는다. create ... | apply 형태라 다시 실행해도 된다
+# 비밀번호가 셸 기록에 남지 않게 read 로 받는다. create ... | apply 형태라 다시 실행해도 된다.
+# read 를 먼저 끝낸 뒤 for 를 실행한다 — 순서가 바뀌면 빈 값으로 만들어진다(다시 실행하면 덮어쓴다)
 read -rp 'nexus user: ' NX_USER; read -rsp 'nexus password: ' NX_PASS; echo
-for ns in react-app-dev react-app-prod; do
+for ns in react-app-dev react-app-prod python-api-dev python-api-prod; do
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "$ns" create secret docker-registry regcred \
     --docker-server=nexus-docker.example.com \
@@ -884,7 +1010,15 @@ for ns in react-app-dev react-app-prod; do
     --dry-run=client -o yaml | kubectl apply -f -
 done
 unset NX_USER NX_PASS
-kubectl get secret regcred -n react-app-dev; kubectl get secret regcred -n react-app-prod
+kubectl get secret -A --field-selector metadata.name=regcred     # 4개 네임스페이스
+```
+
+값이 맞는지는 레지스트리에 직접 물어 확인한다(`auth` 는 `user:password` 의 base64 일 뿐이므로 출력하지 않는다).
+
+```bash
+A=$(kubectl -n react-app-dev get secret regcred -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | sed -E 's/.*"auth":"([^"]+)".*/\1/')
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Basic $A" http://localhost:30082/v2/   # 200 (틀리면 401)
+unset A
 ```
 
 `manifests/react-app/base/deployment.yaml` 에는 `imagePullSecrets: [{name: regcred}]` 가
@@ -970,22 +1104,10 @@ WSL 에서 `argocd.example.com` 은 Windows hosts 파일(1.5)로 `127.0.0.1` 로
 
 `__REPLACE_ME__` 가 들어간 파일은 **그대로 커밋하지 말 것**. 셋 중 하나를 선택한다.
 
-**A. kubectl 로 직접 생성 (가장 단순)**
+**A. kubectl 로 직접 생성 (가장 단순, 이 README 의 방식)**
 
-```bash
-# GitLab 리포지토리 자격증명 (Deploy token, read_repository)
-kubectl -n argocd create secret generic repo-gitlab-https \
-  --from-literal=type=git \
-  --from-literal=url=http://gitlab.example.com/my-group/gitops-manifests.git \
-  --from-literal=username='<deploy-token-username>' \
-  --from-literal=password='<deploy-token>'
-kubectl -n argocd label secret repo-gitlab-https argocd.argoproj.io/secret-type=repository
-
-# 레지스트리 pull secret (앱 네임스페이스마다 필요)
-kubectl -n react-app-dev create secret docker-registry regcred \
-  --docker-server=nexus-docker.example.com \
-  --docker-username='<user>' --docker-password='<password>'
-```
+- GitLab 리포지토리 자격증명(Deploy token) — gitops 프로젝트가 있어야 발급되므로 4.5-2 에서 만든다.
+- 레지스트리 pull secret `regcred` — 3.5-2 에서 만들었다.
 
 `bootstrap/argocd/configs/repo-gitlab.yaml` 은 `configs/kustomization.yaml` 의 resources 에서
 **기본 제외**돼 있다. placeholder 인 채로 적용하면 같은 이름의 시크릿이 먼저 생겨 위
@@ -1049,6 +1171,12 @@ ls -l ~/cicd-argocd-token.txt      # 5.2 에서 jenkins-secrets 의 ARGOCD_AUTH_
 
 > 이 토큰은 admin 의 CLI 로그인 세션(4.3)과 별개다. admin 세션은 24시간이면 만료돼
 > `token is expired` 가 나고 `argocd login` 을 다시 하면 되지만, `cicd` 토큰은 만료 없이 발급된다.
+> 노출되면 `argocd account delete-token --account cicd <id>` 후 재발급하고 5.2 의 Secret 을 갱신한다.
+
+```bash
+argocd account list --grpc-web                     # admin(login), cicd(apiKey, login)
+argocd account get-user-info --grpc-web --auth-token "$(cat ~/cicd-argocd-token.txt)"   # Username: cicd
+```
 
 ### 4.5 애플리케이션 등록
 
@@ -1056,10 +1184,14 @@ Argo CD 는 이 리포지토리가 아니라 **GitLab 의 `my-group/gitops-manif
 그래서 아래 선행 조건이 먼저 필요하다.
 
 **1. gitops 리포지토리 만들기** — GitLab UI 에서 그룹 `my-group` 과 프로젝트
-`gitops-manifests` 를 만든다. *Initialize repository with a README* 는 **끈다**(켜면 첫 push 가 거부된다).
-이 리포지토리의 `apps/` 와 `manifests/` 만 복사해 **루트에** 올린다. 이후 CI 가 이미지 태그를
+`gitops-manifests` 를 만든다(Private). *Initialize repository with a README* 는 **끈다**(켜면 첫 push 가 거부된다).
+이 리포지토리의 `apps/`, `manifests/`, `pipelines/` 를 복사해 **루트에** 올린다. 이후 CI 가 이미지 태그를
 이 리포지토리에 직접 커밋하므로, cicd 리포지토리와는 별개 이력으로 관리한다.
 프로젝트를 만들었으면 2.4 의 **Deploy token** 을 이 프로젝트에서 발급한다.
+
+> 처음부터 구축할 때는 세 디렉터리를 **통째로** 올린다. python-api(8장)·PostgreSQL(9장)의 Application 도 여기서 같이
+> 생기고, 각 장에서는 앱별 준비만 하면 된다. 8.2-3·9.2-4 의 "새 파일만 골라 복사" 는 이미 운영 중인
+> gitops 리포지토리에 나중에 추가할 때의 절차다.
 
 ```bash
 # WSL 에서 처음 커밋한다면 작성자부터 설정한다(없으면 "Author identity unknown" 으로 실패)
@@ -1068,11 +1200,14 @@ git config --global user.email >/dev/null || git config --global user.email '<em
 
 mkdir -p ~/workspace/gitops-manifests && cd ~/workspace/gitops-manifests
 git init -b main
-cp -r ~/workspace/cicd/apps ~/workspace/cicd/manifests .
-git add . && git commit -m "initial: apps, manifests"
+cp -r ~/workspace/cicd/apps ~/workspace/cicd/manifests ~/workspace/cicd/pipelines .
+git add . && git commit -m "initial: apps, manifests, pipelines"
 git remote add origin http://gitlab.example.com/my-group/gitops-manifests.git
-git push -u origin main      # GitLab 사용자명 + 비밀번호(또는 write_repository 토큰)
+git push -u origin main      # 사용자명 root + 비밀번호 (이메일·admin 이 아니다). 커밋 전에 push 하면 src refspec 오류
+git ls-remote origin         # refs/heads/main 이 방금 커밋과 같아야 한다
 ```
+
+> 이후 Jenkins 가 이 리포지토리에 태그 커밋을 쌓는다. WSL 의 이 clone 을 직접 고칠 때는 **항상 먼저 `git pull`** 한다.
 
 **2. Argo CD 에 리포지토리 자격증명 등록** — 2.4 의 Deploy token(`read_repository`)으로 4.2-A 를 실행한다.
 토큰이 셸 기록에 남지 않게 `read` 로 받는다. Deploy token 의 username 은 발급 화면에 나오는
@@ -1089,10 +1224,13 @@ kubectl -n argocd create secret generic repo-gitlab-https \
   | kubectl apply -f -
 unset DT_USER DT_PASS
 
-argocd repo list --grpc-web     # STATUS 가 Successful 이어야 한다
+argocd repo list --grpc-web --refresh hard     # STATUS 가 Successful 이어야 한다
 ```
 
-**3. 앱 네임스페이스 pull secret** — 3.5-2 를 실행한다(dev, prod 두 네임스페이스).
+> `repo list` 는 **캐시된 연결 상태**를 보여 준다. 처음에 잘못된 값(예: username 을 `root` 로)으로 만들었다가
+> 고쳤다면 `--refresh hard` 없이는 계속 `Failed` 로 보인다.
+
+**3. 앱 네임스페이스 pull secret** — 3.5-2 에서 만들었는지 확인한다(`kubectl get secret -A --field-selector metadata.name=regcred`).
 
 **4. 등록**
 
@@ -1110,7 +1248,12 @@ argocd app list --grpc-web
 | `bootstrap` | Synced | Healthy | |
 | `react-app-dev` | Synced | Degraded / Progressing | 이미지 `dev-0000000` 이 아직 없다. 7장에서 Jenkins 가 첫 태그를 커밋하면 풀린다 |
 | `react-app-prod` | OutOfSync | Missing | 수동 동기화 대상(`automated` 없음) |
+| `python-api-dev` | Synced | Degraded / Progressing | react-app-dev 와 같다. 8장의 첫 빌드에서 풀린다 |
+| `python-api-prod` | OutOfSync | Missing | 수동 동기화 대상 |
+| `postgres-dev` | Synced | Progressing / Degraded | PV·`postgres-auth` Secret 이 아직 없다(PVC `Pending`). 9.2 를 하면 스스로 풀린다 |
+| `postgres-prod` | OutOfSync | Missing | 수동 동기화 대상(9.3) |
 
+- `ComparisonError` 가 없으면 된다. finalizer 경고(`prefer a domain-qualified finalizer name`)는 k8s 1.34 의 권고일 뿐 무해하다.
 - `apps/applicationset-gitlab.yaml` 은 `app-of-apps.yaml` 의 `exclude` 로 **기본 제외**된다.
   같은 파일의 placeholder Secret 이 selfHeal 로 실제 토큰을 덮어쓰기 때문이다.
 - `argocd repo list` 가 실패하면 Application 이 `ComparisonError` / `repository not found` 가 된다.
@@ -1132,7 +1275,8 @@ Jenkins 는 4장까지 끝난 뒤에 올린다. 시크릿에 Argo CD `cicd` 토�
    GitLab + Nexus + Argo CD 와 같이 돌리므로 노드 메모리 16GB 이상을 권장한다.
 
 2. **스토리지 디렉터리** — 동적 프로비저너가 없으면 미리 만든다. kind 에서는 노드
-   컨테이너가 아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다):
+   컨테이너가 아니라 **WSL 에서** 만든다(`/data` 가 스토리지 노드로 마운트돼 있다). 1.1 에서 만들었으면 건너뛴다.
+   UID 를 200(nexus)으로 잘못 주면 Jenkins 가 `Permission denied` 로 CrashLoopBackOff 에 빠진다:
 
    ```bash
    mkdir -p /data/jenkins
@@ -1206,7 +1350,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://jenkins.example.com/login   # 2
 
 > **플러그인은 외부(updates.jenkins.io)에서 받는다.** 이미지는 Nexus 를 거치지만
 > `install-plugins` 초기화 컨테이너는 그렇지 않아, 파드가 재생성될 때마다 인터넷이
-> 필요하다. `Temporary failure in name resolution` 으로 CrashLoopBackOff 면 WSL DNS 문제다.
+> 필요하다. `Temporary failure in name resolution` 으로 CrashLoopBackOff 면 WSL DNS 문제다(1.1 의 DNS 고정, 10.2).
 > `plugins.txt` 에 버전을 고정하지 않고 `--latest true` 를 쓰므로 받는 시점에 따라
 > 플러그인 버전이 달라질 수 있다.
 
@@ -1243,7 +1387,21 @@ Jenkinsfile 의 `agent { label 'build' }` 가 `casc.yaml` 의 `build` 템플릿�
   워크스페이스는 `jnlp`(uid 1000)가 만들기 때문에 999 가 `@tmp/durable-*` 에 결과 파일을 쓰지
   못한다. 그러면 sh 스텝이 `process apparently never started` 로 **5분 뒤** 실패한다. 이미지
   push 와 gitops 커밋은 앞 단계에서 이미 끝났으므로 dev 는 배포되는데 빌드만 실패로 남는다.
-  나머지 세 이미지는 원래 root 로 돈다.
+  나머지 이미지는 원래 root 로 돈다.
+- `jnlp` 컨테이너는 이미지를 지정하지 않아 kubernetes 플러그인 기본값(`jenkins/inbound-agent`)을 docker.io 에서 직접 받는다.
+
+에이전트 Pod 는 nodeSelector 가 없어 어느 worker 에나 뜬다. 첫 빌드 전에 두 worker 에 이미지를 받아 두면
+첫 빌드의 대기가 줄고 pull 경로 문제를 먼저 잡는다(kaniko·argocd 는 3.3 에서 확인했다).
+
+```bash
+for n in devops-worker devops-worker2; do
+  for i in alpine/k8s:1.30.2 library/node:22-alpine library/python:3.12-slim \
+           kaniko-project/executor:v1.23.2-debug argoproj/argocd:v3.5.2; do
+    printf '%-15s %-40s ' "$n" "$i"
+    docker exec "$n" crictl pull "nexus-docker-group.example.com/$i" >/dev/null 2>&1 && echo OK || echo FAIL
+  done
+done
+```
 
 ## 6. GitLab webhook 연결 (gitops → Argo CD)
 
@@ -1276,7 +1434,8 @@ kubectl -n argocd rollout status deploy/argocd-server
 그다음 gitops 리포지토리 → **Settings > Webhooks > Add new webhook**
 
 - URL: `http://argocd-server.argocd.svc.cluster.local/api/webhook` (자체 호스팅이면 클러스터 내부 주소로 충분하다)
-- Secret token: `cat ~/argocd-webhook-secret.txt` 의 값
+- Secret token: `~/argocd-webhook-secret.txt` 의 값. 화면에 찍지 않고 Windows 클립보드로 보내 붙여 넣는다:
+  `tr -d '\n' < ~/argocd-webhook-secret.txt | clip.exe`
 - Trigger: `Push events`
 - SSL verification: 평문 URL 이라 무관하다
 
@@ -1292,6 +1451,7 @@ refresh 를 트리거한다. payload 의 URL 은 GitLab `external_url`(`http://g
 따르고, `apps/` 의 `repoURL` 도 같은 주소로 맞춰 두었으므로 추가 설정은 없다.
 
 webhook 이 없으면 `timeout.reconciliation: 180s` 주기로 폴링된다.
+webhook 시크릿을 바꿀 때는 파일·`argocd-secret`·GitLab webhook **세 곳을 함께** 갱신한다.
 
 ## 7. 앱 리포지토리에 파이프라인 배치
 
@@ -1355,13 +1515,16 @@ curl -s -o /dev/null -w 'write %{http_code}\n' -u "ci-bot:$(tr -d '\n' < ~/gitla
 
 ```bash
 cd ~/workspace/react-app
+git status --short            # node_modules·dist 가 없어야 한다(.gitignore)
 git add . && git commit -m "initial: react-app"
+# 아래 push 는 인증을 묻는다(root) — 한 줄씩 붙여 넣는다
 git remote add origin http://gitlab.example.com/my-group/react-app.git
 git push -u origin main
 git push origin main:develop
 ```
 
-아직 Jenkins 잡이 없으므로 push 만으로는 아무것도 돌지 않는다.
+아직 Jenkins 잡이 없으므로 push 만으로는 아무것도 돌지 않는다. `git ls-remote origin` 에 `refs/pipelines/*` 가
+보이면 Auto DevOps 가 켜져 있는 것이다(2.2 의 인스턴스 설정) — 끄고, 생긴 파이프라인은 Build > Pipelines 에서 Cancel 한다.
 
 ### 7.3 Jenkins 잡 등록
 
@@ -1460,7 +1623,9 @@ curl -s http://react-app.example.com/config.js   # env: "prod"
 | "배포 대기" 가 `transitioned from Progressing to Degraded` 뒤 2분 재확인에도 실패 | 일시적 Degraded 가 아니다 — `argocd app get` 으로 Degraded 리소스 확인 (HPA 면 1.8) |
 | 파드 `CrashLoopBackOff`, 로그에 `Read-only file system` | `nginx.conf` 의 `/tmp` 경로 — 7.1 의 `--read-only` 실행으로 재현 |
 | 파드 `ImagePullBackOff` + `401` | `regcred` (3.5-2) |
-| `jenkins-0` 의 `install-plugins` 가 CrashLoopBackOff | 외부 DNS (5.3) |
+| `jenkins-0` 의 `install-plugins` 가 CrashLoopBackOff | 외부 DNS (5.3, 1.1) |
+| "테스트·빌드" 의 `npm ci` 가 이름 해석 실패 | 에이전트가 registry.npmjs.org 에 직접 붙는다 — 외부 DNS (1.1, 10.2) |
+| "배포 대기" 가 15초 만에 `504` | kindnet (10.2) |
 
 ## 8. 두 번째 앱: python-api (FastAPI)
 
@@ -1514,6 +1679,17 @@ docker rm -f python-api-test
 
 ### 8.2 클러스터 쪽 준비
 
+**처음부터 구축했다면 이 절의 1~3 은 이미 끝나 있다** — python 컨테이너는 5.3 의 `casc.yaml` 에, `regcred` 는 3.5-2 에,
+Application 은 4.5 의 첫 push 에 들어 있다. 아래로 점검만 하고 4(hosts)로 넘어간다.
+
+```bash
+kubectl -n jenkins exec jenkins-0 -- grep -A1 'name: "python"' /var/jenkins_home/casc.d/jenkins.yaml
+kubectl get secret regcred -n python-api-dev; kubectl get secret regcred -n python-api-prod
+argocd app list --grpc-web | grep python-api       # dev Synced/Degraded, prod OutOfSync/Missing
+```
+
+1~3 은 이미 운영 중인 환경에 앱을 **나중에 추가할 때**의 절차다.
+
 **1. Jenkins 에이전트에 python 컨테이너** — `casc.yaml` 만 바뀌었으므로 적용 후 JCasC 를 다시 읽힌다(5.3).
 
 ```bash
@@ -1524,7 +1700,7 @@ kubectl -n jenkins exec jenkins-0 -- grep -A1 'name: "python"' /var/jenkins_home
 docker exec devops-worker crictl pull nexus-docker-group.example.com/library/python:3.12-slim   # docker-hub 프록시 경유
 ```
 
-**2. 앱 네임스페이스 pull secret** — 3.5-2 와 같다. 네임스페이스 이름만 바뀐다.
+**2. 앱 네임스페이스 pull secret** — 3.5-2 와 같다(3.5-2 는 이미 python-api 네임스페이스까지 만든다).
 
 ```bash
 read -rp 'nexus user: ' NX_USER; read -rsp 'nexus password: ' NX_PASS; echo
@@ -1682,7 +1858,11 @@ docker exec devops-worker crictl pull nexus-docker-group.example.com/library/pos
 
 ### 9.2 클러스터 쪽 준비
 
+처음부터 구축했다면 `postgres-dev` Application 은 4.5 에서 이미 생겨 PVC `Pending` 으로 기다리고 있다.
+아래 1~3 을 하면 PVC 가 PV 에 붙고 파드가 스스로 뜬다. 4(gitops 에 올리기)는 4.5 에서 끝났으므로 건너뛴다.
+
 **1. 데이터 디렉터리** — WSL 의 `/data` 가 스토리지 노드(`devops-worker`)의 `/data` 로 마운트돼 있다(1.2).
+1.1 에서 만들었으면 확인만 한다.
 
 ```bash
 mkdir -p /data/postgres/dev /data/postgres/prod
@@ -1699,10 +1879,12 @@ kubectl get pv postgres-dev-pv postgres-prod-pv    # STATUS Available, CLAIM pos
 
 **3. 네임스페이스와 비밀번호 Secret** — 비밀번호가 셸 기록에 남지 않게 `read` 로 받는다.
 dev 와 prod 는 **다른 비밀번호**를 쓰고 비밀번호 관리 도구에 보관한다.
+**비밀번호 관리 도구에서 복사해 붙여 넣는다** — `read -rsp` 는 확인 입력이 없어 오타가 그대로 DB 비밀번호가 된다.
 
 ```bash
 for env in dev prod; do
   read -rsp "postgres ${env} password: " PG_PASS; echo
+  [ -n "$PG_PASS" ] || { echo "빈 값 — 건너뜀"; continue; }
   kubectl create namespace "postgres-${env}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "postgres-${env}" create secret generic postgres-auth \
     --from-literal=password="$PG_PASS" \
@@ -1715,7 +1897,16 @@ kubectl -n postgres-dev get secret postgres-auth; kubectl -n postgres-prod get s
 `POSTGRES_PASSWORD` 는 **빈 데이터 디렉터리에서 처음 뜰 때만** 쓰인다. 초기화 뒤에 Secret 을 바꿔도 DB 의 비밀번호는
 그대로다 — 바꾸려면 `ALTER USER app PASSWORD '...'` 와 Secret 을 함께 고친다.
 
-**4. gitops-manifests 에 올리기** — 8.2-3 과 같이 **새 파일만 골라서** 복사한다.
+Secret 이 관리 도구의 값과 같은지는 값을 꺼내지 않고 비교한다.
+
+```bash
+read -rsp 'postgres dev password (관리 도구의 값): ' P; echo
+[ "$(kubectl -n postgres-dev get secret postgres-auth -o jsonpath='{.data.password}' | base64 -d)" = "$P" ] && echo match || echo MISMATCH
+unset P
+```
+
+**4. gitops-manifests 에 올리기** — 처음부터 구축했다면 4.5 에서 끝났다. 이미 운영 중인 gitops 리포지토리에 나중에
+추가할 때만 8.2-3 과 같이 **새 파일만 골라서** 복사한다.
 
 ```bash
 cd ~/workspace/gitops-manifests && git pull
@@ -1751,6 +1942,10 @@ argocd app sync postgres-prod --grpc-web
 argocd app wait postgres-prod --sync --health --timeout 300 --grpc-web
 kubectl -n postgres-prod get pvc,pod
 ```
+
+- `argocd` 가 `token is expired` 면 4.3 의 `argocd login` 을 다시 한다(admin 세션은 24시간).
+- PV 안에 root 소유의 빈 `data/` 디렉터리가 생기는 것은 17 이미지의 `VOLUME /var/lib/postgresql/data` 선언 때문이다. 무해하다.
+- Role/RoleBinding 동기화 때 `last-applied-configuration` Warning 이 보이는 것은 Argo CD 의 RBAC 처리 방식이다. 무해하다.
 
 ### 9.4 접속 확인
 
@@ -1898,7 +2093,7 @@ cd ~/workspace/gitops-manifests && git commit -am "revert(dev): postgres -> 17.6
 
 | 증상 | 원인 |
 |---|---|
-| "버전 목록" 이 `Name or service not known` / timeout | 에이전트의 외부 DNS·인터넷 (TODOLIST 0) 점검의 파드 `nslookup`) |
+| "버전 목록" 이 `Name or service not known` / timeout | 에이전트의 외부 DNS·인터넷 (10.1 점검의 파드 `nslookup`, 1.1 의 DNS 고정) |
 | "버전 목록" 이 `버전 태그를 하나도 찾지 못했다` | Docker Hub API 응답 형식이 바뀌었거나 요청 제한. 콘솔의 URL 을 브라우저로 열어 본다 |
 | 버전 선택 화면 없이 끝남 / `Scripts not permitted` | Manage Jenkins > In-process Script Approval 에서 승인 |
 | "백업" 이 `pods "dev-postgres-0" is forbidden` | `rbac.yaml` 이 반영되지 않았다 — `kubectl -n postgres-dev get rolebinding` (9.1 의 subjects 확인) |
@@ -1907,6 +2102,117 @@ cd ~/workspace/gitops-manifests && git commit -am "revert(dev): postgres -> 17.6
 | "복원" 이 예상 밖 오류로 실패 | 위 "복원이 실패했을 때". 덤프는 PV 의 `backup/` 에 있다 |
 | "gitops 태그 갱신" 이 `변경 없음 - 커밋 생략` | 현재와 같은 버전을 골랐다. 정상 |
 | 18+ 파드 `CrashLoopBackOff` + `Error: in 18+ ... there appears to be PostgreSQL data in: .../17/docker` | PGDATA 가 18 기본값(`<메이저>/docker`)이다. statefulset 의 command 가 `<메이저>/data` 인지 확인 |
+
+## 10. 재시작 후 점검과 알려진 문제
+
+### 10.1 재시작 후 점검 (WSL)
+
+PC 재부팅이나 `wsl --shutdown` 뒤에는 클러스터와 서비스가 살아 있는지부터 본다. 재시작 정책이 `unless-stopped`(1.2)면
+보통은 docker 가 뜰 때 노드도 같이 올라온다. **재시작 직후에는 5~10분 기다린 뒤 확인한다** — GitLab 이 가장 늦고,
+그 전의 `503`·`Unknown` 은 기동 중이라 정상이다.
+
+```bash
+cd ~/workspace/cicd
+uptime -p                                          # 방금 재시작했으면 몇 분 더 기다린다
+systemctl is-active docker                         # active
+docker ps -a --filter label=io.x-k8s.kind.cluster=devops --format 'table {{.Names}}\t{{.Status}}'  # 3개 Up
+kubectl config current-context                     # kind-devops
+kubectl get nodes                                  # 3대 모두 Ready
+
+# 외부 DNS — WSL 고정 설정(1.1)이 유지되고, 노드·파드까지 전달되는지
+cat /etc/resolv.conf                               # 1.1 에서 적은 서버 (링크가 아닌 일반 파일)
+getent ahostsv4 pypi.org | head -1                 # IPv4 한 줄
+docker exec devops-worker grep ExtServers /etc/resolv.conf
+kubectl -n kube-system get pods -l k8s-app=kube-dns          # coredns 2개 1/1
+kubectl run dnstest --rm -i --restart=Never --image=nexus-docker-group.example.com/library/busybox:1.36 -- nslookup pypi.org.
+
+# 서비스 파드 — 모두 Running / READY
+kubectl get pods -A | grep -vE 'Running|Completed' # 첫 빌드 전의 앱 ErrImagePull 외에는 없어야 한다
+kubectl top nodes                                  # metrics-server 동작
+
+# Ingress — 200 또는 302 (jenkins 는 403 일 수 있다 — 로그인 필요)
+for h in gitlab nexus argocd jenkins; do
+  printf '%-8s ' "$h"; curl -sS -o /dev/null -w '%{http_code}\n' -H "Host: $h.example.com" http://localhost/
+done
+
+# Argo CD
+argocd account get-user-info --grpc-web            # Logged In: true (아니면 4.3 의 argocd login)
+argocd app list --grpc-web                         # ComparisonError 없음
+```
+
+### 10.2 알려진 문제
+
+| 증상 | 원인과 조치 |
+|---|---|
+| 노드 컨테이너가 `Exited`, `kubectl` 이 API 서버에 못 붙음 | 재시작 정책(1.7). `docker start $(docker ps -aq --filter label=io.x-k8s.kind.cluster=devops)` 후 1~2분 |
+| WSL 에서 `getent hosts pypi.org` 가 빈 결과, `ping 8.8.8.8` 은 됨 | WSL 의 DNS 프록시가 멈춤 — 1.1 의 DNS 고정. 이미 고정했다면 resolv.conf 가 링크로 돌아갔는지, 네트워크가 바뀌었는지 본다 |
+| WSL·노드는 되는데 파드 안 `nslookup` 만 timeout | `kubectl -n kube-system logs deploy/coredns --tail=20` 로 CoreDNS 의 상위 전달 오류를 본다 |
+| `jenkins-0` 의 `install-plugins` 가 CrashLoopBackOff | 플러그인을 인터넷에서 받는다 — 외부 DNS (위) |
+| Jenkins "테스트" 단계 `npm ci`·`pip install` 이 이름 해석 실패 | 에이전트가 인터넷에 직접 붙는다 — 외부 DNS (위) |
+| `argocd.example.com` 이 504, Jenkins "배포 대기" 가 15초 만에 504 | **kindnet 이 NetworkPolicy 판정을 못 하는 상태.** 아래 참고 |
+| `argocd ...` 가 `token is expired` | admin CLI 세션 24시간 만료 — 4.3 의 `argocd login` |
+| `argocd repo list` 가 `Failed` | 캐시일 수 있다 — `argocd repo list --grpc-web --refresh hard` (4.5) |
+| react-app prod 첫 배포의 "배포 대기" 에 `2분 더 지켜본다` | 새 HPA 의 첫 지표 전 일시적 Degraded — 정상 (7.5) |
+
+**kindnet 과 NetworkPolicy.** argocd 네임스페이스에는 설치 매니페스트 기본 NetworkPolicy 가 7개 있다. kindnet 은 정책이 걸린
+파드로 가는 새 연결을 NFQUEUE 로 받아 판정하는데, 어느 노드의 kindnet 이 느려지면(로그에 `lookup devops-control-plane: i/o timeout`,
+`TLS handshake timeout`) 그 노드의 argocd-server 로 가는 연결이 버려진다. ingress-nginx 는 upstream 연결 5초 × 3회 후 504 를 낸다.
+
+```bash
+# 확인: argocd-server 파드 IP 로 각 노드에서 붙어 본다 (정책이 전부 허용이라 이 파드로만 시험한다)
+IP=$(kubectl -n argocd get pod -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[0].status.podIP}')
+for n in devops-control-plane devops-worker devops-worker2; do
+  printf '%-22s ' "$n"; docker exec "$n" curl -s -m5 -o /dev/null -w '%{http_code}\n' "http://$IP:8080/healthz"
+done                                               # 모두 200 이어야 한다. 000 = timeout
+# 조치: kindnet 재시작
+kubectl -n kube-system rollout restart ds/kindnet
+kubectl -n kube-system rollout status ds/kindnet
+```
+
+repo-server 등 다른 argocd 파드는 정책상 노드 IP 를 거부하는 게 정상이므로 노드에서 curl 로 시험하지 않는다.
+
+## 초기화: 처음부터 다시 구축
+
+지금까지 만든 것을 모두 지우고 0장부터 다시 하는 절차. **되돌릴 수 없다.** GitLab 리포지토리(앱·gitops),
+Nexus 이미지, Jenkins 빌드 기록, PostgreSQL 데이터가 모두 사라진다.
+
+```bash
+# 0. (선택) 영구 데이터 백업 — 클러스터가 떠 있으면 쓰기 중일 수 있으니 1 다음에 받는 것이 안전하다
+# 1. 클러스터 삭제 — 노드 컨테이너와 클러스터 안의 모든 리소스(Secret 포함). kubeconfig 의 kind-devops 컨텍스트도 지워진다
+kind delete cluster --name devops
+docker ps -a --filter label=io.x-k8s.kind.cluster=devops      # 비어 있어야 한다
+
+# (선택) 백업: sudo tar czf ~/data-backup-$(date +%F).tar.gz -C / data
+
+# 2. 영구 데이터 — GitLab·Nexus·Jenkins·PostgreSQL. 먼저 지울 대상을 본다
+ls -ln /data
+sudo rm -rf /data/*
+ls -A /data                                                    # 비어 있어야 한다
+
+# 3. 로컬 작업 리포지토리와 토큰 파일 — 새 GitLab·Argo CD 에는 없는 리포지토리·토큰이다
+ls -d ~/workspace/*
+rm -rf ~/workspace/gitops-manifests ~/workspace/react-app ~/workspace/python-api
+rm -f ~/gitlab-group-token.txt ~/cicd-argocd-token.txt ~/argocd-webhook-secret.txt
+
+# 4. argocd CLI 로그인 정보 (옛 서버의 세션)
+rm -rf ~/.config/argocd ~/.argocd
+
+# 5. (선택) 로컬 테스트 이미지
+docker rmi react-app:local python-api:local 2>/dev/null
+
+# 6. 이 리포지토리를 최신으로
+cd ~/workspace/cicd && git status --short && git pull
+```
+
+**남겨 두는 것** — 다시 하지 않아도 된다(0.1 표로 확인만 한다).
+
+- Windows hosts 파일(1.5), `.wslconfig`
+- WSL 설정: `/etc/wsl.conf`(systemd, DNS 고정), `/etc/resolv.conf`, inotify 한도(1.1)
+- docker, kind, kubectl, argocd CLI 바이너리, git 작성자 설정
+- `~/workspace/cicd` clone
+
+비밀번호 관리 도구의 옛 값(GitLab root, Nexus, Argo CD, Jenkins, PostgreSQL, Deploy token)은 더 이상 쓰이지 않는다.
+새로 정하는 값으로 덮어써 혼동을 막는다. 이후 **0장 → 1.1(`/data` 하위 디렉터리) → 1.2 …** 순서로 진행한다.
 
 ## 이미지 태그 갱신 방식 (택1)
 
@@ -1953,6 +2259,8 @@ kubectl kustomize manifests/react-app/overlays/dev
 kubectl kustomize manifests/react-app/overlays/prod
 kubectl kustomize manifests/python-api/overlays/dev
 kubectl kustomize manifests/python-api/overlays/prod
+kubectl kustomize manifests/postgres/overlays/dev
+kubectl kustomize manifests/postgres/overlays/prod
 ```
 
 ## 부록: GitLab CI 로 돌리기 (Jenkins 대체)
