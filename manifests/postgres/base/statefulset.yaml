@@ -32,14 +32,17 @@ spec:
           # 태그는 overlay 가 마이너까지 고정한다(예: 17.6). 버전 변경은 Jenkins 잡 postgres-deploy 로 한다(README 9.5).
           image: nexus-docker-group.example.com/library/postgres:17
           imagePullPolicy: IfNotPresent
-          # 데이터 디렉터리를 메이저별로 나눈다: /var/lib/postgresql/<PG_MAJOR>/docker (PG_MAJOR 는 공식 이미지의 ENV).
+          # 데이터 디렉터리를 메이저별로 나눈다: /var/lib/postgresql/<PG_MAJOR>/data (PG_MAJOR 는 공식 이미지의 ENV).
           # 메이저마다 데이터 형식이 달라 17 의 데이터로 18 이 뜨지 못하기 때문이다. 태그만 바꾸면 새 메이저는
           # 빈 디렉터리에서 initdb 하고, 이전 메이저의 디렉터리는 그대로 남는다(되돌리기·복구용).
-          # 18 이미지의 기본 PGDATA 와 같은 배치라 17 이하에서도 같은 규칙을 쓴다.
+          # 18 이미지의 기본값(<메이저>/data)은 일부러 피한다. 18 의 엔트리포인트는 PGDATA 가 그 기본값이고 비어 있으면
+          # 옆의 /var/lib/postgresql/*/docker 에서 다른 메이저의 데이터를 찾아, 있으면 initdb 를 거부한다
+          # ("there appears to be PostgreSQL data in ..." — 2026-09-26 17.7 → 18.4 에서 CrashLoopBackOff).
+          # 이름을 data 로 두면 그 검사를 거치지 않아 17 과 18 이 나란히 있을 수 있다.
           command:
             - bash
             - -c
-            - export PGDATA="/var/lib/postgresql/${PG_MAJOR}/docker"; exec docker-entrypoint.sh postgres
+            - export PGDATA="/var/lib/postgresql/${PG_MAJOR}/data"; exec docker-entrypoint.sh postgres
           ports:
             - name: postgres
               containerPort: 5432
@@ -86,7 +89,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           volumeMounts:
-            # PV 를 /var/lib/postgresql 에 붙인다. 아래에 <메이저>/docker(데이터)와 backup/(메이저 변경 때의 덤프)이 생긴다
+            # PV 를 /var/lib/postgresql 에 붙인다. 아래에 <메이저>/data(데이터)와 backup/(메이저 변경 때의 덤프)이 생긴다
             - name: data
               mountPath: /var/lib/postgresql
             # 읽기 전용 루트에서 postgres 가 쓰는 곳: 유닉스 소켓·잠금 파일, 임시 파일

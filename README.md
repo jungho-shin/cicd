@@ -1657,7 +1657,7 @@ StatefulSet 하나로 띄우고, 데이터는 스토리지 노드의 `/data/post
 - **비밀번호는 git 에 없다.** 네임스페이스마다 `postgres-auth` Secret 을 kubectl 로 만든다(9.2-3).
   DB 사용자·DB 이름은 `app`/`app` 으로 매니페스트에 적었다.
 - **읽기 전용 루트 + UID 999.** 앱들과 같은 보안 설정을 쓴다. 쓰기 경로는 데이터·소켓(`/var/run/postgresql`)·`/tmp` 뿐이다.
-- **데이터 디렉터리는 메이저별.** PV 를 `/var/lib/postgresql` 에 붙이고 PGDATA 는 `/var/lib/postgresql/<메이저>/docker` (9.5).
+- **데이터 디렉터리는 메이저별.** PV 를 `/var/lib/postgresql` 에 붙이고 PGDATA 는 `/var/lib/postgresql/<메이저>/data` (9.5).
 - **외부 노출 없음.** Ingress·NodePort 가 없다. 클러스터 안에서 `<env>-postgres.postgres-<env>.svc.cluster.local:5432`
   로 붙고, 밖(WSL)에서 볼 때는 `kubectl port-forward` 를 쓴다(9.4).
 
@@ -1777,7 +1777,7 @@ kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'create tab
 kubectl -n postgres-dev delete pod dev-postgres-0
 kubectl -n postgres-dev wait --for=condition=Ready pod/dev-postgres-0 --timeout=120s
 kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'select count(*) from t;'   # 1 이상
-sudo ls -ln /data/postgres/dev/17/docker | head -3                                                  # WSL 에 실제 파일 (메이저별 디렉터리)
+sudo ls -ln /data/postgres/dev/17/data | head -3                                                  # WSL 에 실제 파일 (메이저별 디렉터리)
 ```
 
 WSL·Windows 의 GUI 도구(DBeaver 등)로 볼 때는 port-forward 를 연다. 켜 둔 동안만 `localhost:15432` 로 붙는다.
@@ -1811,20 +1811,23 @@ Jenkins 잡을 쓰면 **버전 목록에서 골라** 배포하고, 메이저가 
 → **버전 선택 화면**(드롭다운) → (메이저 변경이면) 확인 화면 → `pg_dumpall` 백업
 → gitops 태그 커밋 → Argo CD 배포 완료까지 대기 → (메이저 변경이면) 새 메이저에 복원
 
-**데이터 디렉터리는 메이저별이다.** 컨테이너가 PGDATA 를 `/var/lib/postgresql/<PG_MAJOR>/docker` 로 잡는다
-(`PG_MAJOR` 는 공식 이미지의 환경변수, 18 이미지의 기본 배치와 같다). PV 안은 이렇게 된다:
+**데이터 디렉터리는 메이저별이다.** 컨테이너가 PGDATA 를 `/var/lib/postgresql/<PG_MAJOR>/data` 로 잡는다
+(`PG_MAJOR` 는 공식 이미지의 환경변수). 18 이미지의 기본값 `<메이저>/docker` 는 쓰지 않는다 — 18 의 엔트리포인트는
+PGDATA 가 그 기본값이고 비어 있으면 옆의 `*/docker` 에서 다른 메이저의 데이터를 찾아 initdb 를 거부한다
+(`Error: in 18+ ... there appears to be PostgreSQL data in: /var/lib/postgresql/17/docker`).
+pg_upgrade 를 쓰라는 안전장치인데, 이 구성은 덤프/복원으로 옮기므로 이름을 달리해 비켜 간다. PV 안은 이렇게 된다:
 
 ```
 /data/postgres/dev/            (파드 안 /var/lib/postgresql)
-  17/docker/                   17.x 가 쓰는 데이터
-  18/docker/                   18 로 바꾼 뒤의 데이터 (빈 디렉터리에서 initdb → 복원)
+  17/data/                   17.x 가 쓰는 데이터
+  18/data/                   18 로 바꾼 뒤의 데이터 (빈 디렉터리에서 initdb → 복원)
   backup/pg17-to-pg18-<시각>.sql   메이저 변경 직전의 pg_dumpall
 ```
 
 | 변경 | 잡이 하는 일 | 되돌리기 |
 |---|---|---|
 | 마이너 (17.6 → 17.x) | 태그만 바꾼다. 같은 디렉터리를 그대로 쓴다 | 같은 잡에서 이전 마이너를 고른다 |
-| 메이저 올리기 (17 → 18) | 17 에서 덤프 → 태그 변경 → 18 이 `18/docker` 에 initdb → 덤프 복원 | 같은 잡에서 17 을 고른다(아래) |
+| 메이저 올리기 (17 → 18) | 17 에서 덤프 → 태그 변경 → 18 이 `18/data` 에 initdb → 덤프 복원 | 같은 잡에서 17 을 고른다(아래) |
 | 메이저 내리기 (18 → 17) | 올리기와 같다. 이미 있는 `17/` 은 `17.old-<시각>` 으로 치우고 18 의 덤프를 복원 | 새 문법을 쓴 객체가 있으면 복원이 실패할 수 있다 |
 
 - **메이저 변경 중에는 DB 가 멈추고, 백업 뒤에 들어온 쓰기는 옮겨지지 않는다.** 앱의 쓰기를 먼저 멈춘다.
@@ -1879,7 +1882,7 @@ sudo ls -l /data/postgres/dev /data/postgres/dev/backup                         
 prod 도 같다(`TARGET_ENV` = `prod`). gitops 리포지토리에 `chore(<env>): postgres 17.6 -> 18.x` 형태의 커밋이 쌓인다.
 
 **복원이 실패했을 때** — 잡은 "복원" 단계에서 멈추고 예상 밖의 오류를 보여 준다. 이때 파드는 이미 새 메이저로 떠 있고
-데이터는 일부만 들어가 있다. 원래 데이터는 이전 메이저 디렉터리(`17/docker`)에 그대로 있다.
+데이터는 일부만 들어가 있다. 원래 데이터는 이전 메이저 디렉터리(`17/data`)에 그대로 있다.
 이때는 잡으로 되돌리지 **않는다** — 잡은 메이저 변경으로 보고 불완전한 18 의 데이터를 덤프해 17 에 복원하며, 멀쩡한 `17/` 을 치워 버린다.
 대신 태그만 손으로 돌려 이전 디렉터리로 다시 띄운다:
 
@@ -1887,7 +1890,7 @@ prod 도 같다(`TARGET_ENV` = `prod`). gitops 리포지토리에 `chore(<env>):
 cd ~/workspace/gitops-manifests && git pull
 cd manifests/postgres/overlays/dev && kustomize edit set image nexus-docker-group.example.com/library/postgres=nexus-docker-group.example.com/library/postgres:17.6
 cd ~/workspace/gitops-manifests && git commit -am "revert(dev): postgres -> 17.6" && git push
-# 17.6 은 그대로 남은 17/docker 로 뜬다 — 메이저 변경 직전 상태. prod 면 argocd app sync postgres-prod --grpc-web
+# 17.6 은 그대로 남은 17/data 로 뜬다 — 메이저 변경 직전 상태. prod 면 argocd app sync postgres-prod --grpc-web
 ```
 
 실패 원인(`restore.log`)을 고친 뒤 다시 잡으로 올린다. 그때 남아 있던 `18/` 은 잡이 `18.old-<시각>` 으로 치운다.
@@ -1902,6 +1905,7 @@ cd ~/workspace/gitops-manifests && git commit -am "revert(dev): postgres -> 17.6
 | "복원" 이 `새 메이저(..)로 바뀌지 않았다` | 파드가 아직 옛 이미지. `kubectl -n postgres-<env> get pod -o wide`, Argo CD 앱 상태 확인 후 다시 실행 |
 | "복원" 이 예상 밖 오류로 실패 | 위 "복원이 실패했을 때". 덤프는 PV 의 `backup/` 에 있다 |
 | "gitops 태그 갱신" 이 `변경 없음 - 커밋 생략` | 현재와 같은 버전을 골랐다. 정상 |
+| 18+ 파드 `CrashLoopBackOff` + `Error: in 18+ ... there appears to be PostgreSQL data in: .../17/docker` | PGDATA 가 18 기본값(`<메이저>/docker`)이다. statefulset 의 command 가 `<메이저>/data` 인지 확인 |
 
 ## 이미지 태그 갱신 방식 (택1)
 

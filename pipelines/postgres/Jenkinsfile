@@ -9,7 +9,7 @@
 //       → gitops 태그 갱신 커밋 → Argo CD 배포 완료까지 대기
 //       → (메이저가 바뀌면) 새 메이저에 복원
 //
-// 메이저 변경: 데이터 디렉터리가 메이저별(/var/lib/postgresql/<메이저>/docker)이라
+// 메이저 변경: 데이터 디렉터리가 메이저별(/var/lib/postgresql/<메이저>/data)이라
 // 새 메이저는 빈 디렉터리에서 initdb 한다. 그래서 바꾸기 전에 덤프를 떠서 바꾼 뒤 복원한다.
 // 이전 메이저의 디렉터리와 덤프 파일(/var/lib/postgresql/backup/)은 PV 에 그대로 남는다.
 //
