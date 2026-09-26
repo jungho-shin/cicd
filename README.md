@@ -1757,10 +1757,16 @@ kubectl -n postgres-prod get pvc,pod
 클러스터 안에서(앱이 붙는 경로와 같다):
 
 ```bash
-kubectl -n postgres-dev exec -it dev-postgres-0 -- psql -U app -d app -c 'select version();'
+# 파드 안 유닉스 소켓(local trust) — 비밀번호 없이 붙는다
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'select version();'
 
-# 다른 네임스페이스의 파드에서 서비스 이름으로 — 비밀번호를 물으면 9.2-3 에서 넣은 dev 비밀번호
-kubectl run pgtest --rm -it --restart=Never --image=nexus-docker-group.example.com/library/postgres:17 -- \
+# 서비스 이름으로 TCP + 비밀번호 인증. Secret 값을 화면에 꺼내지 않고 파드 안의 환경변수를 쓴다
+kubectl -n postgres-dev exec dev-postgres-0 -- bash -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h dev-postgres.postgres-dev.svc.cluster.local -U app -d app -c "select current_user, inet_server_addr();"'
+
+# (선택) 다른 네임스페이스의 파드에서, 기억하는 비밀번호로 — 앱이 붙는 경로와 같다.
+# psql 의 Password: 프롬프트가 kubectl 이 붙기 전에 찍혀 보이지 않는다.
+# "If you don't see a command prompt" 가 나오면 그대로 비밀번호를 치고 Enter (그냥 Enter 면 no password supplied)
+kubectl run pgtest --rm -it --restart=Never --image=nexus-docker-group.example.com/library/postgres:17.6 -- \
   psql -h dev-postgres.postgres-dev.svc.cluster.local -U app -d app -c 'select current_user, inet_server_addr();'
 ```
 
@@ -1789,6 +1795,7 @@ kubectl -n postgres-dev port-forward svc/dev-postgres 15432:5432
 | 로그 `initdb: could not change permissions` / `Permission denied` | `/data/postgres` 를 `chown 999:999` 안 함 |
 | `application destination ... is not permitted in project` | `apps/project.yaml` 이 gitops 리포지토리에 반영되지 않았다 |
 | 비밀번호를 바꿨는데 예전 비밀번호로만 붙는다 | 정상 — 초기화 때만 쓰인다(9.2-3) |
+| pgtest 가 `password authentication failed`, 위 PGPASSWORD 방식은 성공 | 입력한 값이 Secret 과 다르다. 9.2-3 의 `read -rsp` 는 확인 입력이 없어 오타가 그대로 들어간다 |
 
 되돌리기: Application 을 지워도 PVC 와 데이터는 남는다(`Delete=false`, `Retain`). 완전히 지우려면
 `kubectl -n postgres-<env> delete pvc <env>-postgres-data` → `kubectl delete pv postgres-<env>-pv` →

@@ -38,6 +38,9 @@ pipeline {
   }
 
   environment {
+    // 파라미터는 셸에서 직접 쓰지 않고 이 값으로 받는다. 새 잡의 첫 실행에는 파라미터가 아직 등록되지 않아
+    // 셸 환경변수 TARGET_ENV 가 없고, set -u 때문에 "TARGET_ENV: parameter not set" 으로 바로 실패한다(2026-09-26 #1).
+    DEPLOY_ENV    = "${params.TARGET_ENV ?: 'dev'}"
     APP_NAME      = 'postgres'
     // manifests/postgres 의 images[].name 과 같아야 한다
     IMAGE         = 'nexus-docker-group.example.com/library/postgres'
@@ -63,9 +66,9 @@ pipeline {
               rm -rf gitops
               git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
               # 렌더링 결과에서 실제로 배포될 이미지 태그를 읽는다
-              kustomize build "gitops/manifests/${APP_NAME}/overlays/${TARGET_ENV}" \
+              kustomize build "gitops/manifests/${APP_NAME}/overlays/${DEPLOY_ENV}" \
                 | awk -v img="${IMAGE}:" 'index($0, img) { sub(".*" img, ""); print; exit }' > current.txt
-              echo "현재 ${TARGET_ENV}: $(cat current.txt)"
+              echo "현재 ${DEPLOY_ENV}: $(cat current.txt)"
               test -s current.txt
             '''
           }
@@ -91,7 +94,7 @@ pipeline {
           // prod 는 이 화면이 곧 승인 단계다.
           timeout(time: 30, unit: 'MINUTES') {
             env.PG_VERSION = input(
-              message: "${params.TARGET_ENV} 의 postgres 버전을 고른다 (현재 ${current})",
+              message: "${env.DEPLOY_ENV} 의 postgres 버전을 고른다 (현재 ${current})",
               ok: '배포',
               parameters: [choice(name: 'PG_VERSION', choices: versions.join('\n'),
                                   description: '메이저별 최신순. 메이저가 바뀌면 백업 → 새 데이터 디렉터리 → 복원을 한다')]
@@ -114,7 +117,7 @@ pipeline {
           } else if (env.PG_VERSION == current) {
             echo "현재와 같은 버전(${current}) - 태그 커밋 없이 상태만 확인한다"
           }
-          currentBuild.description = "${params.TARGET_ENV}: ${current} → ${env.PG_VERSION}"
+          currentBuild.description = "${env.DEPLOY_ENV}: ${current} → ${env.PG_VERSION}"
         }
       }
     }
@@ -125,8 +128,8 @@ pipeline {
         container('tools') {
           sh '''
             set -eu
-            NS="postgres-${TARGET_ENV}"
-            POD="${TARGET_ENV}-postgres-0"
+            NS="postgres-${DEPLOY_ENV}"
+            POD="${DEPLOY_ENV}-postgres-0"
             TS=$(date +%Y%m%d-%H%M%S)
             # PV 안에 둔다. 새 파드도 같은 PV 를 붙이므로 복원 때 그대로 읽는다
             BACKUP="/var/lib/postgresql/backup/pg${CUR_MAJOR}-to-pg${NEW_MAJOR}-${TS}.sql"
@@ -160,7 +163,7 @@ pipeline {
               rm -rf gitops
               git clone --depth 1 "http://${GITOPS_USER}:${GITOPS_TOKEN}@${GITOPS_REPO}" gitops
 
-              cd gitops/manifests/${APP_NAME}/overlays/${TARGET_ENV}
+              cd gitops/manifests/${APP_NAME}/overlays/${DEPLOY_ENV}
               kustomize edit set image "${IMAGE}=${IMAGE}:${PG_VERSION}"
 
               cd "$WORKSPACE/gitops"
@@ -169,7 +172,7 @@ pipeline {
                 echo "변경 없음 - 커밋 생략"
                 exit 0
               fi
-              git commit -m "chore(${TARGET_ENV}): ${APP_NAME} ${CUR_VERSION} -> ${PG_VERSION}"
+              git commit -m "chore(${DEPLOY_ENV}): ${APP_NAME} ${CUR_VERSION} -> ${PG_VERSION}"
               git push origin HEAD:main
             '''
           }
@@ -184,11 +187,11 @@ pipeline {
             sh '''
               set -eu
               OPTS="--grpc-web --plaintext --server $ARGOCD_SERVER --auth-token $ARGOCD_AUTH_TOKEN"
-              APP="${APP_NAME}-${TARGET_ENV}"
+              APP="${APP_NAME}-${DEPLOY_ENV}"
 
               argocd app get "$APP" --refresh $OPTS > /dev/null
               # dev 는 자동 동기화라 prod 만 sync 한다(ci/Jenkinsfile 과 같은 이유)
-              if [ "$TARGET_ENV" = "prod" ]; then
+              if [ "$DEPLOY_ENV" = "prod" ]; then
                 argocd app sync "$APP" $OPTS
               fi
               argocd app wait "$APP" --sync --health --timeout 600 $OPTS
@@ -204,8 +207,8 @@ pipeline {
         container('tools') {
           sh '''
             set -eu
-            NS="postgres-${TARGET_ENV}"
-            POD="${TARGET_ENV}-postgres-0"
+            NS="postgres-${DEPLOY_ENV}"
+            POD="${DEPLOY_ENV}-postgres-0"
             BACKUP=$(cat backup.txt)
 
             kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=300s
@@ -235,7 +238,7 @@ pipeline {
 
   post {
     success {
-      echo "배포 완료: ${params.TARGET_ENV} → postgres ${env.PG_VERSION}"
+      echo "배포 완료: ${env.DEPLOY_ENV} → postgres ${env.PG_VERSION}"
     }
     always {
       // 복원 로그는 데이터가 아니라 psql 메시지뿐이라 남겨 둔다
