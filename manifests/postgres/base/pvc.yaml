@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  annotations:
+    # Application 을 지우거나 이 파일을 빼도 Argo CD 가 PVC 를 지우지 않게 한다.
+    # (PV 는 Retain 이라 데이터 자체는 남지만, PVC 가 지워지면 PV 가 Released 가 되어 다시 붙이려면 손이 간다)
+    argocd.argoproj.io/sync-options: Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual        # 기본 StorageClass 를 쓰려면 이 줄 삭제
+  volumeName: postgres-pv         # overlay 가 환경별 PV 이름으로 바꾼다. 기본 StorageClass 를 쓰려면 삭제
+  resources:
+    requests:
+      storage: 5Gi

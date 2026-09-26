@@ -52,6 +52,8 @@ bootstrap/
     ingress.yaml
     nodeport.yaml
     runner.yaml               (부록) GitLab Runner — 기본 kustomization 에서 제외
+  postgres/                   PostgreSQL dev/prod 용 hostPath PV (9장, 나머지는 manifests/postgres)
+    local-pv.yaml
   nexus/                      (선택) Nexus Repository 3 - 컨테이너 레지스트리 + 아티팩트 저장소
     namespace.yaml
     local-pv.yaml             단일 노드용 hostPath PV
@@ -64,6 +66,7 @@ apps/
   app-of-apps.yaml            부트스트랩 Application (이것만 apply)
   react-app.yaml              react-app dev/prod Application
   python-api.yaml             python-api dev/prod Application (8장)
+  postgres.yaml               PostgreSQL dev/prod Application (9장)
   applicationset-gitlab.yaml  (선택) 그룹 리포지토리 자동 등록
 
 manifests/react-app/
@@ -71,6 +74,9 @@ manifests/react-app/
   overlays/dev/               replicas 1, dev 호스트, develop-<sha> 태그
   overlays/prod/              replicas 3, HPA, PDB, 수동 배포
 manifests/python-api/         두 번째 앱 (8장). replicas 1, HPA·PDB 없음
+manifests/postgres/           PostgreSQL (9장). StatefulSet 1개 + headless Service + PVC
+
+pipelines/postgres/           PostgreSQL 버전 변경 잡 (9.5). gitops 리포지토리에 복사해 Jenkins Pipeline 잡이 읽는다
 
 ci/Jenkinsfile                앱 리포지토리 루트에 복사해서 사용 (7장)
 ci/.gitlab-ci.yml             (부록) GitLab CI 로 돌릴 때 대신 사용 — 둘 중 하나만
@@ -105,6 +111,7 @@ samples/                      배포 테스트용 샘플 앱 (각각 별도 앱 
 | 6. webhook | GitLab → Argo CD 푸시 알림 | 없으면 180초 폴링 |
 | 7. 파이프라인 | 앱 리포지토리에 `Jenkinsfile` 배치 + Jenkins 잡 등록 | 여기까지 하면 push → 배포가 이어진다 |
 | 8. 두 번째 앱 | python-api (FastAPI) | 앱을 추가할 때 앱마다 필요한 것만 |
+| 9. PostgreSQL | dev/prod DB 를 GitOps 로 배포 + 버전 변경 잡 | Jenkins 에서 드롭다운으로 버전 선택(메이저 포함) |
 
 GitLab CI(러너)로 돌리려면 5 를 건너뛰고 7 대신 `부록: GitLab CI 로 돌리기` 로 간다.
 
@@ -1625,6 +1632,269 @@ HPA 가 없으므로 metrics-server 가 없어도 prod health 는 통과한다(r
 | "배포 대기" 가 app not found / `permission denied` | Application 이 아직 없다(8.2-3), 또는 AppProject 허용 네임스페이스 |
 | 파드 `ImagePullBackOff` + `401` | `python-api-*` 네임스페이스에 `regcred` 없음 (8.2-2) |
 | 만든 item 이 사라짐 | 정상 — 재배포·재시작하면 메모리가 비워진다 |
+
+## 9. PostgreSQL (dev / prod)
+
+앱이 쓸 DB 를 같은 GitOps 흐름으로 올린다. 공식 `postgres:17` 이미지를 Nexus 의 Docker Hub 프록시로 받아
+StatefulSet 하나로 띄우고, 데이터는 스토리지 노드의 `/data/postgres/<env>` 에 둔다.
+이미지를 직접 빌드하지 않는다. 버전 변경은 Jenkins 잡 `postgres-deploy` 에서 **드롭다운으로 버전을 골라** 한다(9.5).
+메이저 버전도 바꿀 수 있다 — 데이터 디렉터리를 메이저별로 두고, 잡이 백업 → 새 메이저 initdb → 복원을 한다.
+
+| 파일 | 역할 |
+|---|---|
+| `bootstrap/postgres/local-pv.yaml` | hostPath PV 2개(`postgres-dev-pv`, `postgres-prod-pv`). **kubectl 로 적용** |
+| `manifests/postgres/base/` | StatefulSet(`replicas: 1`) + headless Service + PVC + ServiceAccount + Jenkins 에이전트용 exec 권한(`rbac.yaml`) |
+| `manifests/postgres/overlays/{dev,prod}` | 네임스페이스 `postgres-dev/prod`, 이름 앞에 `dev-`/`prod-`, PVC 가 붙을 PV 이름 |
+| `apps/postgres.yaml` | Argo CD Application 두 개 (dev 자동 / prod 수동 동기화) |
+| `apps/project.yaml` | AppProject `dev`/`prod` 의 허용 네임스페이스에 `postgres-*` 추가 |
+| `pipelines/postgres/Jenkinsfile`, `list-versions.py` | 버전 변경 잡. gitops 리포지토리에 두고 Jenkins Pipeline 잡이 읽는다(9.5) |
+
+설계에서 정한 것:
+
+- **PV 는 Argo CD 밖에 둔다.** PV 는 클러스터 범위 리소스인데 AppProject 는 Namespace 만 허용한다(`clusterResourceWhitelist`).
+  허용을 넓히는 대신 GitLab·Jenkins·Nexus 와 같이 kubectl 로 적용한다. PV 의 `claimRef` 로 어느 PVC 에 붙을지 미리 정한다.
+- **PVC 는 Argo CD 가 만들되 지우지 않는다.** `argocd.argoproj.io/sync-options: Delete=false`. PV 는 `Retain` 이다.
+- **비밀번호는 git 에 없다.** 네임스페이스마다 `postgres-auth` Secret 을 kubectl 로 만든다(9.2-3).
+  DB 사용자·DB 이름은 `app`/`app` 으로 매니페스트에 적었다.
+- **읽기 전용 루트 + UID 999.** 앱들과 같은 보안 설정을 쓴다. 쓰기 경로는 데이터·소켓(`/var/run/postgresql`)·`/tmp` 뿐이다.
+- **데이터 디렉터리는 메이저별.** PV 를 `/var/lib/postgresql` 에 붙이고 PGDATA 는 `/var/lib/postgresql/<메이저>/docker` (9.5).
+- **외부 노출 없음.** Ingress·NodePort 가 없다. 클러스터 안에서 `<env>-postgres.postgres-<env>.svc.cluster.local:5432`
+  로 붙고, 밖(WSL)에서 볼 때는 `kubectl port-forward` 를 쓴다(9.4).
+
+### 9.1 배포 전 확인 (WSL)
+
+```bash
+cd ~/workspace/cicd && git pull
+kubectl kustomize manifests/postgres/overlays/dev  | grep -E '^kind:|^  name:|namespace:|volumeName|claimName|serviceName|image:'
+kubectl kustomize manifests/postgres/overlays/dev  | grep -A3 '^subjects:'      # RoleBinding 대상 — namespace: jenkins 여야 한다
+kubectl kustomize manifests/postgres/overlays/prod | grep -E 'namespace:|volumeName|claimName'
+```
+
+dev 는 `dev-postgres`(StatefulSet·Service, 이미지 `...postgres:17.6`), `dev-postgres-data`(PVC, `volumeName: postgres-dev-pv`),
+`claimName: dev-postgres-data`, `serviceName: dev-postgres` 이고 모두 `namespace: postgres-dev` 여야 한다.
+prod 는 같은 자리가 `prod-` / `postgres-prod` / `postgres-prod-pv` 다.
+
+이미지를 스토리지 노드에 미리 받아 둔다(docker-group 프록시 경유 — 첫 기동이 빨라지고 pull 경로 문제를 먼저 잡는다).
+
+```bash
+docker exec devops-worker crictl pull nexus-docker-group.example.com/library/postgres:17.6
+```
+
+### 9.2 클러스터 쪽 준비
+
+**1. 데이터 디렉터리** — WSL 의 `/data` 가 스토리지 노드(`devops-worker`)의 `/data` 로 마운트돼 있다(1.2).
+
+```bash
+mkdir -p /data/postgres/dev /data/postgres/prod
+sudo chown -R 999:999 /data/postgres     # postgres 컨테이너 UID
+ls -ln /data/postgres                    # dev, prod 모두 999 999
+```
+
+**2. PV**
+
+```bash
+kubectl apply -k bootstrap/postgres
+kubectl get pv postgres-dev-pv postgres-prod-pv    # STATUS Available, CLAIM postgres-dev/dev-postgres-data ...
+```
+
+**3. 네임스페이스와 비밀번호 Secret** — 비밀번호가 셸 기록에 남지 않게 `read` 로 받는다.
+dev 와 prod 는 **다른 비밀번호**를 쓰고 비밀번호 관리 도구에 보관한다.
+
+```bash
+for env in dev prod; do
+  read -rsp "postgres ${env} password: " PG_PASS; echo
+  kubectl create namespace "postgres-${env}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "postgres-${env}" create secret generic postgres-auth \
+    --from-literal=password="$PG_PASS" \
+    --dry-run=client -o yaml | kubectl apply -f -
+done
+unset PG_PASS
+kubectl -n postgres-dev get secret postgres-auth; kubectl -n postgres-prod get secret postgres-auth
+```
+
+`POSTGRES_PASSWORD` 는 **빈 데이터 디렉터리에서 처음 뜰 때만** 쓰인다. 초기화 뒤에 Secret 을 바꿔도 DB 의 비밀번호는
+그대로다 — 바꾸려면 `ALTER USER app PASSWORD '...'` 와 Secret 을 함께 고친다.
+
+**4. gitops-manifests 에 올리기** — 8.2-3 과 같이 **새 파일만 골라서** 복사한다.
+
+```bash
+cd ~/workspace/gitops-manifests && git pull
+cp ~/workspace/cicd/apps/postgres.yaml apps/
+cp ~/workspace/cicd/apps/project.yaml apps/
+cp -r ~/workspace/cicd/manifests/postgres manifests/
+mkdir -p pipelines && cp -r ~/workspace/cicd/pipelines/postgres pipelines/     # 9.5 의 버전 변경 잡
+git status --short            # apps/postgres.yaml, apps/project.yaml, manifests/postgres/, pipelines/ 만 보여야 한다
+git diff apps/project.yaml    # postgres-dev / postgres-prod 두 줄씩만 늘어야 한다
+git add -A && git commit -m "add postgres" && git push
+```
+
+### 9.3 dev 확인 · prod 동기화
+
+`bootstrap` Application 이 새 Application 을 만든다(webhook 이 있으면 바로, 없으면 3분 안).
+dev 는 자동 동기화된다. 첫 기동은 initdb 때문에 30초~1분 걸린다.
+
+```bash
+argocd app list --grpc-web | grep postgres
+kubectl -n postgres-dev get pvc,pod
+kubectl -n postgres-dev logs statefulset/dev-postgres | tail -5   # database system is ready to accept connections
+```
+
+| Application | SYNC | HEALTH | 이유 |
+|---|---|---|---|
+| `postgres-dev` | Synced | Healthy | PVC `Bound`, 파드 `1/1` |
+| `postgres-prod` | OutOfSync | Missing | 수동 동기화 대상 |
+
+prod 는 Jenkins 승인 단계가 없으므로 직접 동기화한다.
+
+```bash
+argocd app sync postgres-prod --grpc-web
+argocd app wait postgres-prod --sync --health --timeout 300 --grpc-web
+kubectl -n postgres-prod get pvc,pod
+```
+
+### 9.4 접속 확인
+
+클러스터 안에서(앱이 붙는 경로와 같다):
+
+```bash
+kubectl -n postgres-dev exec -it dev-postgres-0 -- psql -U app -d app -c 'select version();'
+
+# 다른 네임스페이스의 파드에서 서비스 이름으로 — 비밀번호를 물으면 9.2-3 에서 넣은 dev 비밀번호
+kubectl run pgtest --rm -it --restart=Never --image=nexus-docker-group.example.com/library/postgres:17 -- \
+  psql -h dev-postgres.postgres-dev.svc.cluster.local -U app -d app -c 'select current_user, inet_server_addr();'
+```
+
+데이터가 PV 에 남는지 — 파드를 지워도 테이블이 그대로여야 한다.
+
+```bash
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'create table if not exists t(id int); insert into t values (1);'
+kubectl -n postgres-dev delete pod dev-postgres-0
+kubectl -n postgres-dev wait --for=condition=Ready pod/dev-postgres-0 --timeout=120s
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'select count(*) from t;'   # 1 이상
+sudo ls -ln /data/postgres/dev/17/docker | head -3                                                  # WSL 에 실제 파일 (메이저별 디렉터리)
+```
+
+WSL·Windows 의 GUI 도구(DBeaver 등)로 볼 때는 port-forward 를 연다. 켜 둔 동안만 `localhost:15432` 로 붙는다.
+
+```bash
+kubectl -n postgres-dev port-forward svc/dev-postgres 15432:5432
+```
+
+| 증상 | 원인 |
+|---|---|
+| PVC `Pending`, 이벤트에 `volume ... already bound to a different claim` | PV 의 `claimRef` 와 PVC 이름·네임스페이스가 다르다(9.1 확인) |
+| PVC `Pending`, PV 가 없다 | 9.2-2 안 함 |
+| 파드 `CreateContainerConfigError` + `secret "postgres-auth" not found` | 9.2-3 안 함 |
+| 파드 `ContainerCreating` + `hostPath type check failed` | `/data/postgres/<env>` 가 없다(9.2-1) |
+| 로그 `initdb: could not change permissions` / `Permission denied` | `/data/postgres` 를 `chown 999:999` 안 함 |
+| `application destination ... is not permitted in project` | `apps/project.yaml` 이 gitops 리포지토리에 반영되지 않았다 |
+| 비밀번호를 바꿨는데 예전 비밀번호로만 붙는다 | 정상 — 초기화 때만 쓰인다(9.2-3) |
+
+되돌리기: Application 을 지워도 PVC 와 데이터는 남는다(`Delete=false`, `Retain`). 완전히 지우려면
+`kubectl -n postgres-<env> delete pvc <env>-postgres-data` → `kubectl delete pv postgres-<env>-pv` →
+`sudo rm -rf /data/postgres/<env>` 순서로 직접 지운다.
+
+### 9.5 버전 변경 (Jenkins 잡 `postgres-deploy`)
+
+버전은 overlay 의 `images[].newTag`(처음 `17.6`)로 정해진다. 이 값을 바꿔 gitops 리포지토리에 커밋하면
+Argo CD 가 StatefulSet 을 새 이미지로 바꾼다(파드가 한 번 재시작된다 — 그동안 접속이 끊긴다).
+Jenkins 잡을 쓰면 **버전 목록에서 골라** 배포하고, 메이저가 바뀔 때 필요한 백업·복원까지 잡이 한다.
+
+흐름: **Build with Parameters**(환경 dev/prod) → 현재 태그 읽기 → Docker Hub 에서 버전 목록 조회
+→ **버전 선택 화면**(드롭다운) → (메이저 변경이면) 확인 화면 → `pg_dumpall` 백업
+→ gitops 태그 커밋 → Argo CD 배포 완료까지 대기 → (메이저 변경이면) 새 메이저에 복원
+
+**데이터 디렉터리는 메이저별이다.** 컨테이너가 PGDATA 를 `/var/lib/postgresql/<PG_MAJOR>/docker` 로 잡는다
+(`PG_MAJOR` 는 공식 이미지의 환경변수, 18 이미지의 기본 배치와 같다). PV 안은 이렇게 된다:
+
+```
+/data/postgres/dev/            (파드 안 /var/lib/postgresql)
+  17/docker/                   17.x 가 쓰는 데이터
+  18/docker/                   18 로 바꾼 뒤의 데이터 (빈 디렉터리에서 initdb → 복원)
+  backup/pg17-to-pg18-<시각>.sql   메이저 변경 직전의 pg_dumpall
+```
+
+| 변경 | 잡이 하는 일 | 되돌리기 |
+|---|---|---|
+| 마이너 (17.6 → 17.x) | 태그만 바꾼다. 같은 디렉터리를 그대로 쓴다 | 같은 잡에서 이전 마이너를 고른다 |
+| 메이저 올리기 (17 → 18) | 17 에서 덤프 → 태그 변경 → 18 이 `18/docker` 에 initdb → 덤프 복원 | 같은 잡에서 17 을 고른다(아래) |
+| 메이저 내리기 (18 → 17) | 올리기와 같다. 이미 있는 `17/` 은 `17.old-<시각>` 으로 치우고 18 의 덤프를 복원 | 새 문법을 쓴 객체가 있으면 복원이 실패할 수 있다 |
+
+- **메이저 변경 중에는 DB 가 멈추고, 백업 뒤에 들어온 쓰기는 옮겨지지 않는다.** 앱의 쓰기를 먼저 멈춘다.
+- 이전 메이저의 디렉터리와 덤프 파일은 **지우지 않는다.** 디스크를 비우려면 확인 후 WSL 에서 직접 지운다.
+- **마이너 버전**은 데이터 형식이 같아 올리고 내릴 수 있다. 다만 릴리스 노트에 "업데이트 후 REINDEX 필요" 같은
+  추가 작업이 적힌 버전이 있으니 prod 에 올리기 전에 확인한다.
+- **prod 는 버전 선택 화면이 곧 승인이다.** 앱 파이프라인의 "prod 승인" 과 같은 역할.
+- 드롭다운에는 Jenkinsfile 의 `MAJORS`(`15 16 17 18 19`)에서 실제로 나와 있는 메이저만 보인다.
+  현재 메이저는 최근 10개, 다른 메이저는 최근 3개 마이너.
+- 목록은 에이전트가 `hub.docker.com` 에 직접 물어 만든다(외부 DNS 필요 — 8.3 과 같은 조건).
+  이미지 자체는 노드가 Nexus docker-group 프록시로 받는다.
+- 백업·복원은 잡이 `kubectl exec` 로 파드 안에서 한다. 그 권한은 `manifests/postgres/base/rbac.yaml` 이
+  에이전트 계정(`jenkins/jenkins-agent`)에 **`postgres-*` 네임스페이스에서만** 준다.
+
+**1. 잡 만들기** — 9.2-4 에서 `pipelines/postgres/` 를 gitops 리포지토리에 올렸어야 한다.
+Jenkins → **New Item** → 이름 `postgres-deploy`, **Pipeline** 선택 → OK.
+
+- Pipeline → Definition: **Pipeline script from SCM**
+- SCM: Git, Repository URL: `http://gitlab.gitlab.svc.cluster.local/my-group/gitops-manifests.git`
+- Credentials: `ci-bot/****** (gitops 매니페스트 리포지토리 push 용)` (7.3 과 같은 것)
+- Branch Specifier: `*/main`, Script Path: `pipelines/postgres/Jenkinsfile`
+- Build Triggers 는 아무것도 켜지 않는다 — 사람이 돌릴 때만 실행된다. 이 잡 자신이 gitops 리포지토리에 커밋하므로
+  SCM 폴링을 켜면 자기 커밋으로 다시 실행된다.
+
+**2. 첫 실행** — 새 잡은 Jenkinsfile 을 한 번 읽기 전에는 파라미터를 모른다. 처음에는 버튼이 **Build Now** 이고
+기본값(dev)으로 돈다. 버전 선택 화면에서 멈추므로 거기서 현재 버전 그대로 **배포**(변경 없음)하거나 **Abort** 한다.
+그 뒤부터 버튼이 **Build with Parameters** 로 바뀐다.
+
+**3. 마이너 변경** — `postgres-deploy` → **Build with Parameters** → `TARGET_ENV` = `dev` → Build.
+"버전 목록" 단계가 끝나면 빌드가 멈춘다. 빌드 화면 왼쪽의 **Input requested**(또는 단계 뷰의 일시정지 칸)를 누르면
+드롭다운이 뜬다. `17.x` 를 골라 **배포**. 콘솔 마지막 줄 `배포 완료: dev → postgres 17.x`,
+빌드 목록에는 설명으로 `dev: 17.6 → 17.x` 가 남는다.
+
+```bash
+kubectl -n postgres-dev get pod dev-postgres-0 -o jsonpath='{.spec.containers[0].image}{"\n"}'   # ...postgres:17.x
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -tAc 'show server_version;'     # 17.x
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'select count(*) from t;'    # 9.4 에서 넣은 행이 그대로
+```
+
+**4. 메이저 변경** — 같은 방법으로 `18.x` 를 고르면 확인 화면이 한 번 더 뜬다(**진행**).
+"백업 (메이저 변경)" → "gitops 태그 갱신" → "배포 대기" → "복원 (메이저 변경)" 순으로 돈다.
+"복원" 단계 콘솔에 `새 서버 버전: 18.x`, `복원 오류 N건 (예상된 already exists 를 뺀 나머지 0건)`, 그리고 테이블 목록이 나오면 된다.
+`already exists` 는 initdb 가 이미 만든 `app` 사용자·`app` DB 를 덤프가 다시 만들려다 난 것으로 정상이다.
+복원 로그는 빌드의 아티팩트 `restore.log` 로 남는다.
+
+```bash
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -tAc 'show server_version;'     # 18.x
+kubectl -n postgres-dev exec dev-postgres-0 -- psql -U app -d app -c 'select count(*) from t;'    # 17 때와 같은 값
+sudo ls -l /data/postgres/dev /data/postgres/dev/backup                                         # 17/ 18/ backup/
+```
+
+prod 도 같다(`TARGET_ENV` = `prod`). gitops 리포지토리에 `chore(<env>): postgres 17.6 -> 18.x` 형태의 커밋이 쌓인다.
+
+**복원이 실패했을 때** — 잡은 "복원" 단계에서 멈추고 예상 밖의 오류를 보여 준다. 이때 파드는 이미 새 메이저로 떠 있고
+데이터는 일부만 들어가 있다. 원래 데이터는 이전 메이저 디렉터리(`17/docker`)에 그대로 있다.
+이때는 잡으로 되돌리지 **않는다** — 잡은 메이저 변경으로 보고 불완전한 18 의 데이터를 덤프해 17 에 복원하며, 멀쩡한 `17/` 을 치워 버린다.
+대신 태그만 손으로 돌려 이전 디렉터리로 다시 띄운다:
+
+```bash
+cd ~/workspace/gitops-manifests && git pull
+cd manifests/postgres/overlays/dev && kustomize edit set image nexus-docker-group.example.com/library/postgres=nexus-docker-group.example.com/library/postgres:17.6
+cd ~/workspace/gitops-manifests && git commit -am "revert(dev): postgres -> 17.6" && git push
+# 17.6 은 그대로 남은 17/docker 로 뜬다 — 메이저 변경 직전 상태. prod 면 argocd app sync postgres-prod --grpc-web
+```
+
+실패 원인(`restore.log`)을 고친 뒤 다시 잡으로 올린다. 그때 남아 있던 `18/` 은 잡이 `18.old-<시각>` 으로 치운다.
+
+| 증상 | 원인 |
+|---|---|
+| "버전 목록" 이 `Name or service not known` / timeout | 에이전트의 외부 DNS·인터넷 (TODOLIST 0) 점검의 파드 `nslookup`) |
+| "버전 목록" 이 `버전 태그를 하나도 찾지 못했다` | Docker Hub API 응답 형식이 바뀌었거나 요청 제한. 콘솔의 URL 을 브라우저로 열어 본다 |
+| 버전 선택 화면 없이 끝남 / `Scripts not permitted` | Manage Jenkins > In-process Script Approval 에서 승인 |
+| "백업" 이 `pods "dev-postgres-0" is forbidden` | `rbac.yaml` 이 반영되지 않았다 — `kubectl -n postgres-dev get rolebinding` (9.1 의 subjects 확인) |
+| "배포 대기" 가 600초 뒤 실패, 파드 `ImagePullBackOff` | Nexus docker-group 이 그 태그를 받지 못했다 — `docker exec devops-worker crictl pull ...postgres:<버전>` |
+| "복원" 이 `새 메이저(..)로 바뀌지 않았다` | 파드가 아직 옛 이미지. `kubectl -n postgres-<env> get pod -o wide`, Argo CD 앱 상태 확인 후 다시 실행 |
+| "복원" 이 예상 밖 오류로 실패 | 위 "복원이 실패했을 때". 덤프는 PV 의 `backup/` 에 있다 |
+| "gitops 태그 갱신" 이 `변경 없음 - 커밋 생략` | 현재와 같은 버전을 골랐다. 정상 |
 
 ## 이미지 태그 갱신 방식 (택1)
 

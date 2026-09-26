@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  # hostPath PV 하나를 쓰는 단일 인스턴스. 2 이상으로 올리면 두 파드가 같은 디렉터리를
+  # 동시에 쓴다(kind-config.yaml 헤더 2번). 복제가 필요하면 오퍼레이터(CloudNativePG 등)를 쓴다.
+  replicas: 1
+  serviceName: postgres
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      serviceAccountName: postgres
+      # 종료 시 postgres 가 checkpoint 를 끝낼 시간을 준다(기본 30초는 짧을 수 있다)
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999          # 공식 이미지(debian 판)의 postgres 사용자
+        runAsGroup: 999
+        fsGroup: 999            # emptyDir 용. hostPath 에는 적용되지 않아 /data/postgres 는 chown 한다(9.2)
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Docker Hub 프록시(docker-group) 경유. docker-group 은 익명 pull 이라 regcred 가 필요 없다(3.3).
+          # 태그는 overlay 가 마이너까지 고정한다(예: 17.6). 버전 변경은 Jenkins 잡 postgres-deploy 로 한다(README 9.5).
+          image: nexus-docker-group.example.com/library/postgres:17
+          imagePullPolicy: IfNotPresent
+          # 데이터 디렉터리를 메이저별로 나눈다: /var/lib/postgresql/<PG_MAJOR>/docker (PG_MAJOR 는 공식 이미지의 ENV).
+          # 메이저마다 데이터 형식이 달라 17 의 데이터로 18 이 뜨지 못하기 때문이다. 태그만 바꾸면 새 메이저는
+          # 빈 디렉터리에서 initdb 하고, 이전 메이저의 디렉터리는 그대로 남는다(되돌리기·복구용).
+          # 18 이미지의 기본 PGDATA 와 같은 배치라 17 이하에서도 같은 규칙을 쓴다.
+          command:
+            - bash
+            - -c
+            - export PGDATA="/var/lib/postgresql/${PG_MAJOR}/docker"; exec docker-entrypoint.sh postgres
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: app
+            - name: POSTGRES_DB
+              value: app
+            # 비밀번호는 git 에 두지 않는다. kubectl 로 만든 Secret(README 9.2)에서 읽는다.
+            # 초기화(빈 디렉터리에서 첫 기동) 때만 쓰인다 — 나중에 Secret 을 바꿔도 DB 비밀번호는 그대로다.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-auth
+                  key: password
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # 첫 기동의 initdb 동안은 소켓으로만 뜨는 임시 서버라 TCP 로 묻는 아래 프로브가 실패한다.
+          # startupProbe 로 최대 5분 기다려 그 사이 liveness 가 재시작시키지 않게 한다.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # PV 를 /var/lib/postgresql 에 붙인다. 아래에 <메이저>/docker(데이터)와 backup/(메이저 변경 때의 덤프)이 생긴다
+            - name: data
+              mountPath: /var/lib/postgresql
+            # 읽기 전용 루트에서 postgres 가 쓰는 곳: 유닉스 소켓·잠금 파일, 임시 파일
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,54 @@
+# PostgreSQL dev/prod (README 9장). 이미지를 빌드하지 않는다 — 버전 변경은 Jenkins 잡 postgres-deploy 가
+# overlay 의 이미지 태그를 gitops 리포지토리에 커밋해서 한다(README 9.5).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: dev
+  source:
+    repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
+    targetRevision: main
+    path: manifests/postgres/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: postgres-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postgres-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: prod
+  source:
+    repoURL: http://gitlab.example.com/my-group/gitops-manifests.git
+    targetRevision: main
+    path: manifests/postgres/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: postgres-prod
+  syncPolicy:
+    # 운영은 수동 동기화. 첫 배포는 argocd app sync 로 직접(README 9.3), 버전 변경은 postgres-deploy 잡이 건다(9.5).
+    syncOptions:
+      - CreateNamespace=true
+  revisionHistoryLimit: 20

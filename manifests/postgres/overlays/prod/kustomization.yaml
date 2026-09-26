@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: postgres-prod
+namePrefix: prod-
+
+resources:
+  - ../../base
+
+# 마이너 버전까지 고정한다. Jenkins 잡 postgres-deploy 가 `kustomize edit set image` 로 이 값을 바꾸고
+# gitops 리포지토리에 커밋한다(README 9.5). 메이저가 바뀌면 잡이 덤프 → 새 디렉터리 initdb → 복원까지 한다.
+images:
+  - name: nexus-docker-group.example.com/library/postgres
+    newTag: "17.6"
+
+# PV(bootstrap/postgres/local-pv.yaml)는 claimRef 로 이 PVC(prod-postgres-data)를 기다린다.
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: postgres-data
+    patch: |-
+      - op: replace
+        path: /spec/volumeName
+        value: postgres-prod-pv

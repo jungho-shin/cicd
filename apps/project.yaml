@@ -16,6 +16,8 @@ spec:
       namespace: react-app-dev
     - server: https://kubernetes.default.svc
       namespace: python-api-dev
+    - server: https://kubernetes.default.svc
+      namespace: postgres-dev
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace
@@ -49,6 +51,8 @@ spec:
       namespace: react-app-prod
     - server: https://kubernetes.default.svc
       namespace: python-api-prod
+    - server: https://kubernetes.default.svc
+      namespace: postgres-prod
   clusterResourceWhitelist:
     - group: ''
       kind: Namespace

@@ -1,0 +1,29 @@
+# Jenkins 잡 postgres-deploy(README 9.5)가 메이저 버전을 바꿀 때 postgres 파드 안에서
+# pg_dumpall(백업)·psql(복원)을 kubectl exec 로 돌린다. 그 권한을 이 네임스페이스에만 준다.
+# 에이전트 계정 jenkins/jenkins-agent 는 원래 아무 권한이 없다(bootstrap/jenkins/rbac.yaml).
+# 주의: 이 권한은 에이전트 Pod 템플릿 `build` 를 쓰는 모든 잡이 갖는다.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: postgres-deploy
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: postgres-deploy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: postgres-deploy
+subjects:
+  # 다른 네임스페이스(jenkins)의 계정이다. overlay 의 namespace 가 바뀌어도 이 값은 jenkins 로 남아야 한다(9.1 에서 확인)
+  - kind: ServiceAccount
+    name: jenkins-agent
+    namespace: jenkins

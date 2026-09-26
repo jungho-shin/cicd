@@ -1,0 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# PV 만 있다. StatefulSet·Service·PVC 는 manifests/postgres 에서 Argo CD 가 배포한다(README 9장).
+resources:
+  - local-pv.yaml       # 동적 프로비저너가 있으면 이 줄 삭제

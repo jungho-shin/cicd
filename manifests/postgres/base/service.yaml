@@ -1,0 +1,15 @@
+# StatefulSet 의 serviceName 이 가리키는 headless Service. 인스턴스가 하나라
+# 클러스터 안에서는 이 이름으로 바로 붙는다(README 9.4):
+#   <prefix>-postgres.<namespace>.svc.cluster.local:5432   예) dev-postgres.postgres-dev.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
