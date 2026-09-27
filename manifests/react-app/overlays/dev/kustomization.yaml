@@ -12,7 +12,7 @@ replicas:
   - name: react-app
     count: 1
 
-# GitLab CI 가 `kustomize edit set image` 로 이 값을 갱신하고
+# Jenkins 가 `kustomize edit set image` 로 이 값을 갱신하고
 # gitops 리포지토리에 커밋한다. Argo CD 가 그 커밋을 감지해 배포한다.
 images:
   - name: nexus-docker.example.com/my-group/react-app

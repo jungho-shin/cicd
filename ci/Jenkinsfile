@@ -4,7 +4,7 @@
 //
 // 흐름: 테스트/빌드(node) → 이미지 빌드&푸시(kaniko) → gitops 리포지토리 태그 갱신 커밋
 //       → Argo CD 가 감지하여 배포 → 배포 완료까지 대기
-//   (ci/.gitlab-ci.yml 과 같은 흐름이다. CI 는 둘 중 하나만 쓴다 — README 7장 / 부록)
+//   브랜치 규칙: develop → dev, main → prod(승인 후). 그 외 브랜치는 테스트까지만 돈다.
 //
 // 에이전트는 bootstrap/jenkins/casc.yaml 의 Pod 템플릿 `build` 를 쓴다.
 // 컨테이너 4개: node / kaniko / tools(kubectl·kustomize·git) / argocd
@@ -42,7 +42,7 @@ pipeline {
     stage('준비') {
       steps {
         script {
-          // GitLab CI 의 CI_COMMIT_REF_SLUG / CI_COMMIT_SHORT_SHA 와 같은 값을 만든다.
+          // 이미지 태그 = <브랜치 slug>-<커밋 SHA 앞 8자리>.
           // multibranch 가 아니면 BRANCH_NAME 이 없으므로 GIT_BRANCH 로 물러선다.
           def raw = env.BRANCH_NAME ?: (env.GIT_BRANCH ?: '')
           raw = raw.replaceFirst('^origin/', '')
@@ -112,7 +112,7 @@ pipeline {
     stage('prod 승인') {
       when { expression { env.DEPLOY_ENV == 'prod' } }
       steps {
-        // GitLab CI 의 `when: manual` 에 해당한다. 타임아웃은 전체 파이프라인 것과 별개다.
+        // 사람이 승인해야 넘어간다. 타임아웃은 전체 파이프라인 것과 별개다.
         timeout(time: 60, unit: 'MINUTES') {
           input message: "prod 에 ${env.IMAGE_TAG} 를 배포할까요?", ok: '배포'
         }

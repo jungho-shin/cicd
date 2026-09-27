@@ -28,7 +28,7 @@ spec:
       kind: LimitRange
   roles:
     - name: ci
-      description: GitLab CI 동기화 트리거용
+      description: CI(Jenkins) 동기화 트리거용
       policies:
         - p, proj:dev:ci, applications, sync, dev/*, allow
         - p, proj:dev:ci, applications, get, dev/*, allow

@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
-# CI 가 이미지 태그를 넘긴다(.gitlab-ci.yml 의 --build-arg). 화면의 version 에 표시된다
+# CI 가 이미지 태그를 넘긴다(Jenkinsfile 의 --build-arg). 화면의 version 에 표시된다
 ARG APP_VERSION=local
 ENV VITE_APP_VERSION=${APP_VERSION}
 RUN npm run build

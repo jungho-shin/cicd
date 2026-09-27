@@ -7,7 +7,7 @@ namespace: argocd
 # 버전은 클러스터 k8s 버전과 호환되는 태그로 고정할 것.
 #   v3.5 는 k8s v1.33~v1.36 에서 테스트됨 (kind 노드 이미지 v1.34.0).
 #   호환표: https://argo-cd.readthedocs.io/en/stable/operator-manual/installation/
-#   CLI 이미지(ci/.gitlab-ci.yml 의 .argocd-wait)도 같은 태그로 맞춘다.
+#   CLI 이미지(bootstrap/jenkins/casc.yaml 의 argocd 컨테이너)도 같은 태그로 맞춘다.
 #   install.yaml     : 단일 인스턴스(개발/소규모)
 #   ha/install.yaml  : 운영(HA, Redis 3-node)
 resources:

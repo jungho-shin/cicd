@@ -15,8 +15,7 @@ GitLab 이 **git 호스트**를, Jenkins 가 **CI**(빌드·테스트·이미지
 ```
 
 클러스터(kind) → GitLab → Nexus → Argo CD → Jenkins → 파이프라인 순으로 올린다. 아래
-`설치 순서` 표가 전체 흐름이고, 각 장이 그 순서대로 이어진다. Jenkins 대신 GitLab 내장
-CI(러너)로 돌리는 구성은 `부록: GitLab CI 로 돌리기` 로 뺐다.
+`설치 순서` 표가 전체 흐름이고, 각 장이 그 순서대로 이어진다.
 
 ## 디렉터리
 
@@ -51,7 +50,6 @@ bootstrap/
     gitlab.yaml               GitLab omnibus StatefulSet + Service + PVC (root 비밀번호 Secret 은 kubectl 로 — 2.2)
     ingress.yaml
     nodeport.yaml
-    runner.yaml               (부록) GitLab Runner — 기본 kustomization 에서 제외
   postgres/                   PostgreSQL dev/prod 용 hostPath PV (9장, 나머지는 manifests/postgres)
     local-pv.yaml
   nexus/                      (선택) Nexus Repository 3 - 컨테이너 레지스트리 + 아티팩트 저장소
@@ -79,7 +77,6 @@ manifests/postgres/           PostgreSQL (9장). StatefulSet 1개 + headless Ser
 pipelines/postgres/           PostgreSQL 버전 변경 잡 (9.5). gitops 리포지토리에 복사해 Jenkins Pipeline 잡이 읽는다
 
 ci/Jenkinsfile                앱 리포지토리 루트에 복사해서 사용 (7장)
-ci/.gitlab-ci.yml             (부록) GitLab CI 로 돌릴 때 대신 사용 — 둘 중 하나만
 
 samples/                      배포 테스트용 샘플 앱 (각각 별도 앱 리포지토리로 복사해서 사용)
   react-app/                  앱 리포지토리 템플릿 (React + Vite, nginx 로 서빙) — 7장
@@ -114,8 +111,6 @@ samples/                      배포 테스트용 샘플 앱 (각각 별도 앱 
 | 8. 두 번째 앱 | python-api (FastAPI) | 앱을 추가할 때 앱마다 필요한 것만 |
 | 9. PostgreSQL | dev/prod DB 를 GitOps 로 배포 + 버전 변경 잡 | Jenkins 에서 드롭다운으로 버전 선택(메이저 포함) |
 | 10. 재시작 후 점검 | PC 재부팅·`wsl --shutdown` 뒤 상태 확인, 알려진 문제 | 구축 후 수시로 |
-
-GitLab CI(러너)로 돌리려면 5 를 건너뛰고 7 대신 `부록: GitLab CI 로 돌리기` 로 간다.
 
 **작업 위치.** 명령은 모두 WSL 의 `~/workspace/cicd` (이 리포지토리의 clone)에서 실행한다고 가정한다.
 Windows 쪽에서 이 리포지토리를 고쳤다면 push 한 뒤 WSL 에서 `git pull` 해야 클러스터 작업에 반영된다.
@@ -568,8 +563,7 @@ kubectl top nodes
 ## 2. GitLab CE 설치
 
 이 구성의 git 호스트를 클러스터 안에 올린다. 앱 리포지토리와 gitops 리포지토리가 모두
-여기에 있다. CE 에는 CI 도 내장돼 있지만 이 구성의 CI 는 Jenkins(5장)가 맡는다
-(GitLab CI 로 돌리려면 `부록: GitLab CI 로 돌리기`).
+여기에 있다. CE 에는 CI 도 내장돼 있지만 이 구성의 CI 는 Jenkins(5장)가 맡는다.
 
 `bootstrap/gitlab/` 은 omnibus 이미지(`gitlab/gitlab-ce`) 하나로 PostgreSQL·Redis·
 Gitaly·nginx 를 모두 띄우는 단일 Pod 구성이다. 공식 Helm 차트(`gitlab/gitlab`)는
@@ -2245,8 +2239,7 @@ cd ~/workspace/cicd && git status --short && git pull
 - **replicas diff 무시**: HPA 사용 시 `argocd-cm` 의 `resource.customizations.ignoreDifferences.apps_Deployment` 로
   OutOfSync 오탐을 막는다.
 - **gitops 커밋이 CI 를 다시 부르지 않는다**: Jenkins 잡은 앱 리포지토리만 보므로 gitops 리포지토리
-  커밋으로 빌드가 재귀 실행되지 않는다. GitLab CI(부록)로 돌릴 때는 커밋 메시지의 `[skip ci]` 가
-  그 역할을 한다.
+  커밋으로 빌드가 재귀 실행되지 않는다.
 - **동시 빌드 없음**: Jenkinsfile 의 `disableConcurrentBuilds()` 로 같은 브랜치 빌드가 겹치지 않는다.
   두 빌드가 동시에 gitops 에 push 하다 한쪽이 거부되는 것을 막는다.
 
@@ -2262,126 +2255,3 @@ kubectl kustomize manifests/python-api/overlays/prod
 kubectl kustomize manifests/postgres/overlays/dev
 kubectl kustomize manifests/postgres/overlays/prod
 ```
-
-## 부록: GitLab CI 로 돌리기 (Jenkins 대체)
-
-Jenkins(5장) 대신 GitLab 내장 CI 와 러너로 같은 흐름을 돌리는 구성. 컴포넌트가 하나 줄고
-`ci/.gitlab-ci.yml` 하나면 된다. CI 는 하나만 고른다.
-
-| 구성 | git 호스트 | CI | 파이프라인 파일 |
-|---|---|---|---|
-| **GitLab + Jenkins** (기본, 5·7장) | GitLab CE | Jenkins | `ci/Jenkinsfile` |
-| GitLab 단독 (이 부록) | GitLab CE | GitLab CI + Runner | `ci/.gitlab-ci.yml` |
-
-> ⚠️ **앱 리포지토리에는 둘 중 하나만 둔다.** `Jenkinsfile` 과 `.gitlab-ci.yml` 이 같이 있으면
-> push 한 번에 두 CI 가 모두 돌아 같은 overlay 에 이미지 태그를 커밋하고 서로 밀어낸다.
-> Jenkins 에서 옮겨 온다면 Jenkins 의 `react-app` 잡도 비활성화한다.
-
-순서는 본문 1~4 → A.1 → 6 → A.2~A.4 다(5·7장 대신).
-
-### A.1 GitLab Runner 등록
-
-GitLab 은 설치만으로 CI 가 돌지 않는다. 잡을 실행할 러너가 따로 필요하다.
-러너는 토큰이 있어야 기동되므로 **GitLab 이 뜬 뒤에** 적용한다.
-
-1. **토큰 발급** — **Admin Area > CI/CD > Runners > New instance runner**
-   - Tags: `build`
-   - *Run untagged jobs* 체크 (태그 없는 잡도 받게)
-   - **Create runner** → 화면의 authentication token(`glrt-...`)을 복사한다.
-     이 화면을 벗어나면 토큰을 다시 볼 수 없다(다시 만들어야 한다).
-     그 아래 `gitlab-runner register` 안내는 따르지 않는다 — 토큰을 config.toml 에 바로 넣는 방식이라 필요 없다.
-
-2. **토큰 Secret 생성** — `runner.yaml` 에는 토큰을 적지 않는다(2.2·4.2 와 같은 이유).
-
-```bash
-read -rsp 'runner token (glrt-...): ' RT; echo
-# glrt- 로 시작하지 않으면(빈 값·잘못 붙여 넣기) 만들지 않는다
-[[ $RT == glrt-* ]] && kubectl -n gitlab create secret generic gitlab-runner-secrets \
-  --from-literal=RUNNER_TOKEN="$RT" --dry-run=client -o yaml | kubectl apply -f -
-unset RT
-kubectl -n gitlab get secret gitlab-runner-secrets
-```
-
-3. **러너 적용** — `bootstrap/gitlab/kustomization.yaml` 에서 `runner.yaml` 줄의 주석을 해제한다(기본은 제외).
-   GitLab 본체도 같은 kustomization 이므로, 러너 외에 바뀌는 게 없는지 먼저 diff 로 본다.
-
-```bash
-kubectl kustomize bootstrap/gitlab | kubectl diff -f - | grep -E '^(\+\+\+|---) '
-# gitlab-runner 관련 리소스만 나오면 적용한다. gitlab StatefulSet 등이 보이면 멈추고 내용을 확인한다
-kubectl kustomize bootstrap/gitlab | kubectl apply -f -
-kubectl -n gitlab rollout status deploy/gitlab-runner
-kubectl -n gitlab logs deploy/gitlab-runner --tail=20
-```
-
-로그에 `Configuration loaded` 와 `Starting multi-runner` 가 뜨고, Admin Area > CI/CD > Runners 목록에서
-러너가 **Online**(초록 점)이면 성공이다. glrt 토큰은 등록 절차가 없으므로 `Registering runner` 줄은 나오지 않는다.
-잡 Pod 는 `gitlab` 네임스페이스에 `gitlab-runner-job` 서비스 어카운트로 뜬다(권한 없음).
-
-> - 토큰이 틀리면 로그에 `403 Forbidden` 이 반복된다. 2 를 다시 실행하고
->   `kubectl -n gitlab rollout restart deploy/gitlab-runner` — 환경변수는 Pod 시작 때만 읽힌다.
-> - Pod 가 `CreateContainerConfigError` 면 2 의 Secret 이 없는 것이다.
-> - **잡 파드의 이미지는 Nexus(3장)를 거친다.** `config.toml` 의 `image` 와 `helper_image` 가
->   `nexus-docker-group.example.com/...` 을 가리킨다. 러너 자체는 Nexus 없이도 Online 이 되지만,
->   **잡은 3장을 끝낸 뒤에야 돈다.** 여기서 먼저 잡을 돌려 보고 싶으면 두 줄을 각각
->   `alpine:3.22`, `registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v17.11.0`
->   으로 되돌리면 된다(외부 인터넷 필요).
-> - **러너 버전을 올릴 때는 `helper_image` 태그도 같이 올린다.** 본체(`gitlab/gitlab-runner:v17.11.0`)와
->   helper 의 버전이 어긋나면 잡이 실패한다. helper 는 `.gitlab-ci.yml` 에 안 보이는 숨은 컨테이너라
->   `git clone` 단계에서 엉뚱하게 터진다.
-
-### A.2 CI/CD 변수 등록
-
-`my-group/react-app` 을 7.2 처럼 만든 뒤 Settings > CI/CD > **Variables** > Add variable.
-**모든 변수에서 *Protect variable* 체크를 끈다.** 켜 두면 보호 브랜치(`main`)에서만 값이 들어가
-`develop` 파이프라인이 빈 값으로 실패한다.
-
-| Key | Value | Visibility |
-|---|---|---|
-| `DOCKER_REGISTRY` | `nexus-docker.example.com` | Visible |
-| `DOCKER_USER` | Nexus 사용자 (push 권한) | Visible |
-| `DOCKER_PASSWORD` | Nexus 비밀번호 | Masked |
-| `GITOPS_REPO` | `gitlab.example.com/my-group/gitops-manifests.git` | Visible |
-| `GITOPS_USER` | `ci-bot` | Visible |
-| `GITOPS_TOKEN` | `~/gitlab-group-token.txt` (2.4) | Masked |
-| `ARGOCD_SERVER` | `argocd.example.com:80` | Visible |
-| `ARGOCD_AUTH_TOKEN` | `~/cicd-argocd-token.txt` (4.4) | Masked |
-
-Masked 는 값이 8자 이상이고 공백이 없어야 저장된다. 앱 리포지토리 체크아웃은 GitLab CI 가
-잡 토큰으로 하므로, 그룹 토큰은 gitops push 에만 쓰인다(gitops 프로젝트 전용 Project access
-token 을 Maintainer / `write_repository` 로 발급해 대신 써도 된다).
-
-### A.3 파이프라인 배치와 dev 배포
-
-7.1 에서 `Jenkinsfile` 대신 `.gitlab-ci.yml` 을 복사한다.
-
-```bash
-cd ~/workspace/react-app
-rm -f Jenkinsfile
-cp ~/workspace/cicd/ci/.gitlab-ci.yml .
-git add -A && git commit -m "ci: GitLab CI"
-git push -u origin main -o ci.skip       # main 은 prod 용이라 이 push 는 파이프라인을 건너뛴다
-git push origin main:develop             # develop → dev 파이프라인 시작
-```
-
-`react-app` > Build > **Pipelines** 에서 `build-test → docker-build-push → deploy-dev → wait-dev` 가
-모두 초록이면 된다. 확인 방법은 7.4 와 같다. gitops-manifests 에는
-`chore(dev): react-app -> develop-<sha> [skip ci]` 커밋이 생긴다.
-
-### A.4 prod 배포와 자주 막히는 곳
-
-```bash
-git push origin main       # main 파이프라인: build-test → docker-build-push → deploy-prod(수동)
-```
-
-Pipelines 에서 `deploy-prod` 의 ▶ 를 누르면 태그 커밋 후 `wait-prod` 가 sync 까지 건다.
-사전 조건과 확인 방법은 7.5 와 같다.
-
-GitLab CI 에만 있는 증상(나머지는 7.6 과 같다):
-
-| 증상 | 원인 |
-|---|---|
-| `Unable to create pipeline` + 잡 0개 | `.gitlab-ci.yml` 문법. script 한 줄에 따옴표 없이 `: `(콜론+공백)가 들어가면 YAML 이 문자열이 아닌 맵으로 읽어 `script config should be a string ...` 가 난다 → 줄 전체를 `'...'` 로 감싼다. Build > Pipeline editor > Validate 로 미리 확인 |
-| 잡이 `pending` | 러너 Offline (A.1) 또는 태그 불일치 |
-| `build-test` 가 이미지 pull 실패 | Nexus docker-group 익명 pull (3.3) |
-| kaniko `UNAUTHORIZED` | `DOCKER_USER`/`DOCKER_PASSWORD`, 또는 변수가 Protected |
-| `git clone` 단계에서 엉뚱하게 실패 | 러너 본체와 `helper_image` 버전 불일치 (A.1) |
